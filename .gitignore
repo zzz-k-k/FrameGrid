@@ -1,0 +1,4 @@
+generated-projects/
+.codex-imagegen-probe/
+__pycache__/
+*.pyc
