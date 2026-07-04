@@ -87,6 +87,376 @@ def pixel_spec(pixel_size: int) -> dict[str, Any]:
     }
 
 
+HUMANOID_BASIC_NODES = [
+    {"id": "root", "name": "Root", "parent": None, "type": "anchor", "default": [32, 54]},
+    {"id": "pelvis", "name": "Pelvis", "parent": "root", "type": "body", "default": [32, 38]},
+    {"id": "chest", "name": "Chest", "parent": "pelvis", "type": "body", "default": [32, 26]},
+    {"id": "neck", "name": "Neck", "parent": "chest", "type": "body", "default": [32, 20]},
+    {"id": "head", "name": "Head", "parent": "neck", "type": "body", "default": [32, 14]},
+    {"id": "left_shoulder", "name": "Left Shoulder", "parent": "chest", "type": "arm", "default": [29, 25]},
+    {"id": "left_elbow", "name": "Left Elbow", "parent": "left_shoulder", "type": "arm", "default": [25, 33]},
+    {"id": "left_hand", "name": "Left Hand", "parent": "left_elbow", "type": "arm", "default": [23, 40]},
+    {"id": "right_shoulder", "name": "Right Shoulder", "parent": "chest", "type": "arm", "default": [35, 25]},
+    {"id": "right_elbow", "name": "Right Elbow", "parent": "right_shoulder", "type": "arm", "default": [39, 31]},
+    {"id": "right_hand", "name": "Right Hand", "parent": "right_elbow", "type": "arm", "default": [42, 37]},
+    {"id": "left_hip", "name": "Left Hip", "parent": "pelvis", "type": "leg", "default": [29, 38]},
+    {"id": "left_knee", "name": "Left Knee", "parent": "left_hip", "type": "leg", "default": [25, 46]},
+    {"id": "left_ankle", "name": "Left Ankle", "parent": "left_knee", "type": "leg", "default": [22, 53]},
+    {"id": "left_foot", "name": "Left Foot", "parent": "left_ankle", "type": "foot", "default": [21, 56]},
+    {"id": "right_hip", "name": "Right Hip", "parent": "pelvis", "type": "leg", "default": [35, 38]},
+    {"id": "right_knee", "name": "Right Knee", "parent": "right_hip", "type": "leg", "default": [39, 45]},
+    {"id": "right_ankle", "name": "Right Ankle", "parent": "right_knee", "type": "leg", "default": [43, 53]},
+    {"id": "right_foot", "name": "Right Foot", "parent": "right_ankle", "type": "foot", "default": [44, 56]},
+]
+
+
+def builtin_skeleton_presets() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "humanoid_basic",
+            "name": "Humanoid Basic",
+            "description": "Basic 19-node humanoid skeleton for small pixel characters.",
+            "canvas": [64, 64],
+            "ground_y": 56,
+            "nodes": HUMANOID_BASIC_NODES,
+        },
+        {
+            "id": "humanoid_weapon",
+            "name": "Humanoid Weapon",
+            "description": "Humanoid skeleton with weapon grip and weapon tip anchors.",
+            "canvas": [64, 64],
+            "ground_y": 56,
+            "nodes": HUMANOID_BASIC_NODES
+            + [
+                {"id": "weapon_grip", "name": "Weapon Grip", "parent": "right_hand", "type": "prop", "default": [42, 37]},
+                {"id": "weapon_tip", "name": "Weapon Tip", "parent": "weapon_grip", "type": "prop", "default": [49, 28]},
+            ],
+        },
+        {
+            "id": "humanoid_cape",
+            "name": "Humanoid Cape",
+            "description": "Humanoid skeleton with cape cloth anchors.",
+            "canvas": [64, 64],
+            "ground_y": 56,
+            "nodes": HUMANOID_BASIC_NODES
+            + [
+                {"id": "cape_top", "name": "Cape Top", "parent": "chest", "type": "cloth", "default": [33, 26]},
+                {"id": "cape_mid", "name": "Cape Mid", "parent": "cape_top", "type": "cloth", "default": [38, 39]},
+                {"id": "cape_tip", "name": "Cape Tip", "parent": "cape_mid", "type": "cloth", "default": [40, 51]},
+            ],
+        },
+    ]
+
+
+def skeleton_by_id(skeleton_id: str) -> dict[str, Any]:
+    for skeleton in builtin_skeleton_presets():
+        if skeleton["id"] == skeleton_id:
+            return skeleton
+    return builtin_skeleton_presets()[0]
+
+
+def node_ids(skeleton: dict[str, Any]) -> set[str]:
+    return {node["id"] for node in skeleton.get("nodes", [])}
+
+
+def scale_point(point: list[int] | tuple[int, int], pixel_size: int) -> list[int]:
+    factor = pixel_size / 64
+    return [int(round(point[0] * factor)), int(round(point[1] * factor))]
+
+
+def scale_joints(joints: dict[str, list[int]], pixel_size: int) -> dict[str, list[int]]:
+    return {joint: scale_point(point, pixel_size) for joint, point in joints.items()}
+
+
+def default_joints_for_skeleton(skeleton: dict[str, Any], pixel_size: int) -> dict[str, list[int]]:
+    return {node["id"]: scale_point(node["default"], pixel_size) for node in skeleton.get("nodes", [])}
+
+
+def project_action_template_path(project_id: str, template_id: str) -> Path:
+    path = project_path(project_id) / "action-templates" / template_id
+    if not path.resolve().is_relative_to(project_path(project_id).resolve()):
+        raise ValueError("invalid action template path")
+    return path
+
+
+def template_summary(template: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": template["id"],
+        "name": template["name"],
+        "source": template.get("source", "builtin"),
+        "skeleton_id": template.get("skeleton_id"),
+        "frame_count": len(template.get("frames", [])),
+        "direction": template.get("direction", "front"),
+        "loop": template.get("loop", True),
+    }
+
+
+def humanoid_pose(overrides: dict[str, list[int]] | None = None) -> dict[str, list[int]]:
+    joints = {node["id"]: list(node["default"]) for node in HUMANOID_BASIC_NODES}
+    if overrides:
+        joints.update({joint: list(point) for joint, point in overrides.items()})
+    return joints
+
+
+def walk_left_frames() -> list[dict[str, Any]]:
+    raw_frames = [
+        ("contact A", {"root": [32, 54], "pelvis": [32, 38], "chest": [31, 26], "neck": [30, 20], "head": [29, 14], "left_elbow": [25, 32], "left_hand": [22, 38], "right_elbow": [39, 31], "right_hand": [43, 36], "left_knee": [25, 45], "left_ankle": [21, 53], "left_foot": [19, 56], "right_knee": [40, 46], "right_ankle": [44, 53], "right_foot": [46, 56]}, {"left_foot": True, "right_foot": True}),
+        ("down A", {"root": [32, 55], "pelvis": [32, 39], "chest": [31, 27], "neck": [30, 21], "head": [29, 15], "left_elbow": [26, 34], "left_hand": [23, 40], "right_elbow": [38, 29], "right_hand": [42, 34], "left_knee": [28, 47], "left_ankle": [23, 54], "left_foot": [21, 56], "right_knee": [38, 44], "right_ankle": [41, 52], "right_foot": [42, 54]}, {"left_foot": True, "right_foot": False}),
+        ("passing A", {"root": [32, 53], "pelvis": [32, 37], "chest": [31, 25], "neck": [30, 19], "head": [29, 13], "left_elbow": [29, 34], "left_hand": [30, 40], "right_elbow": [35, 29], "right_hand": [36, 34], "left_knee": [31, 46], "left_ankle": [32, 53], "left_foot": [32, 56], "right_knee": [36, 44], "right_ankle": [39, 51], "right_foot": [40, 53]}, {"left_foot": True, "right_foot": False}),
+        ("contact B", {"root": [32, 54], "pelvis": [32, 38], "chest": [31, 26], "neck": [30, 20], "head": [29, 14], "left_elbow": [37, 31], "left_hand": [41, 36], "right_elbow": [27, 32], "right_hand": [23, 38], "left_knee": [26, 46], "left_ankle": [21, 53], "left_foot": [18, 56], "right_knee": [40, 45], "right_ankle": [44, 53], "right_foot": [47, 56]}, {"left_foot": True, "right_foot": True}),
+        ("down B", {"root": [32, 55], "pelvis": [32, 39], "chest": [31, 27], "neck": [30, 21], "head": [29, 15], "left_elbow": [38, 29], "left_hand": [42, 34], "right_elbow": [26, 34], "right_hand": [23, 40], "left_knee": [29, 44], "left_ankle": [23, 52], "left_foot": [22, 54], "right_knee": [37, 47], "right_ankle": [43, 54], "right_foot": [45, 56]}, {"left_foot": False, "right_foot": True}),
+        ("passing B", {"root": [32, 53], "pelvis": [32, 37], "chest": [31, 25], "neck": [30, 19], "head": [29, 13], "left_elbow": [35, 29], "left_hand": [36, 34], "right_elbow": [29, 34], "right_hand": [30, 40], "left_knee": [28, 44], "left_ankle": [25, 51], "left_foot": [24, 53], "right_knee": [33, 46], "right_ankle": [32, 53], "right_foot": [32, 56]}, {"left_foot": False, "right_foot": True}),
+    ]
+    frames = []
+    for index, (label, overrides, locks) in enumerate(raw_frames, start=1):
+        frames.append({"index": index, "label": label, "joints": humanoid_pose(overrides), "locks": locks})
+    return frames
+
+
+def idle_frames() -> list[dict[str, Any]]:
+    raw_frames = [
+        ("idle high", {}),
+        ("idle low", {"root": [32, 55], "pelvis": [32, 39], "chest": [32, 27], "neck": [32, 21], "head": [32, 15], "left_hand": [23, 41], "right_hand": [42, 38]}),
+        ("idle high return", {}),
+        ("idle low return", {"root": [32, 55], "pelvis": [32, 39], "chest": [32, 27], "neck": [32, 21], "head": [32, 15], "left_hand": [24, 40], "right_hand": [41, 38]}),
+    ]
+    return [{"index": index, "label": label, "joints": humanoid_pose(overrides), "locks": {"left_foot": True, "right_foot": True}} for index, (label, overrides) in enumerate(raw_frames, start=1)]
+
+
+def attack_right_frames() -> list[dict[str, Any]]:
+    raw_frames = [
+        ("ready", {"right_elbow": [39, 28], "right_hand": [43, 27], "left_hand": [25, 37]}),
+        ("windup", {"chest": [31, 26], "right_elbow": [38, 22], "right_hand": [43, 19], "weapon_grip": [43, 19], "weapon_tip": [50, 13], "left_hand": [24, 40]}),
+        ("strike", {"chest": [34, 26], "right_elbow": [45, 28], "right_hand": [52, 30], "weapon_grip": [52, 30], "weapon_tip": [60, 31], "left_hand": [29, 37], "right_foot": [45, 56]}),
+        ("follow through", {"chest": [35, 27], "right_elbow": [47, 34], "right_hand": [54, 39], "weapon_grip": [54, 39], "weapon_tip": [60, 45], "left_hand": [30, 35]}),
+        ("recover", {"right_elbow": [41, 32], "right_hand": [45, 36], "weapon_grip": [45, 36], "weapon_tip": [51, 32], "left_hand": [25, 38]}),
+        ("settle", {"right_elbow": [39, 31], "right_hand": [42, 37], "weapon_grip": [42, 37], "weapon_tip": [49, 28]}),
+    ]
+    return [{"index": index, "label": label, "joints": humanoid_pose(overrides), "locks": {"left_foot": True, "right_foot": True}} for index, (label, overrides) in enumerate(raw_frames, start=1)]
+
+
+def build_builtin_action_template(template_id: str, pixel_size: int, skeleton: dict[str, Any] | None = None) -> dict[str, Any]:
+    skeleton = skeleton or skeleton_by_id("humanoid_basic")
+    if template_id == "idle":
+        frames = idle_frames()
+        name = "Idle"
+        direction = "front"
+        loop = True
+    elif template_id == "attack_right":
+        frames = attack_right_frames()
+        name = "Attack Right"
+        direction = "right"
+        loop = False
+    else:
+        template_id = "walk_left"
+        frames = walk_left_frames()
+        name = "Walk Left"
+        direction = "left"
+        loop = True
+
+    allowed = node_ids(skeleton)
+    scaled_frames = []
+    for frame in frames:
+        joints = {joint: point for joint, point in frame["joints"].items() if joint in allowed}
+        scaled_frames.append(
+            {
+                "index": frame["index"],
+                "label": frame["label"],
+                "joints": scale_joints(joints, pixel_size),
+                "locks": frame.get("locks", {}),
+            }
+        )
+    return {
+        "id": template_id,
+        "name": name,
+        "source": "builtin",
+        "skeleton_id": skeleton["id"],
+        "pixel_size": pixel_size,
+        "direction": direction,
+        "loop": loop,
+        "frames": scaled_frames,
+    }
+
+
+def list_action_template_summaries(project_id: str) -> list[dict[str, Any]]:
+    templates = [
+        template_summary({"id": "walk_left", "name": "Walk Left", "source": "builtin", "skeleton_id": "humanoid_basic", "direction": "left", "loop": True, "frames": [None] * 6}),
+        template_summary({"id": "idle", "name": "Idle", "source": "builtin", "skeleton_id": "humanoid_basic", "direction": "front", "loop": True, "frames": [None] * 4}),
+        template_summary({"id": "attack_right", "name": "Attack Right", "source": "builtin", "skeleton_id": "humanoid_weapon", "direction": "right", "loop": False, "frames": [None] * 6}),
+    ]
+    custom_root = project_path(project_id) / "action-templates"
+    if custom_root.exists():
+        for template_file in sorted(custom_root.glob("*/template.json"), key=lambda path: path.stat().st_mtime, reverse=True):
+            templates.append(template_summary(read_json(template_file, {})))
+    return templates
+
+
+def load_action_template(project_id: str, template_id: str, pixel_size: int, skeleton: dict[str, Any]) -> dict[str, Any]:
+    custom_file = project_action_template_path(project_id, template_id) / "template.json"
+    if custom_file.exists():
+        template = read_json(custom_file, {})
+        template["source"] = template.get("source", "custom")
+        return template
+    return build_builtin_action_template(template_id, pixel_size, skeleton)
+
+
+def render_pose_guides(template: dict[str, Any], skeleton: dict[str, Any], output_dir: Path) -> list[str]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pixel_size = int(template.get("pixel_size") or skeleton.get("canvas", [64, 64])[0])
+    scale = max(4, 256 // max(1, pixel_size))
+    width = pixel_size * scale
+    height = pixel_size * scale
+    node_map = {node["id"]: node for node in skeleton.get("nodes", [])}
+    guide_urls: list[str] = []
+
+    for frame in template.get("frames", []):
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        joints = frame.get("joints", {})
+        ground_y = int(round((skeleton.get("ground_y", pixel_size - 8) / 64) * pixel_size))
+        draw.line((0, ground_y * scale, width, ground_y * scale), fill=(120, 120, 120, 140), width=max(1, scale // 2))
+
+        for node in skeleton.get("nodes", []):
+            parent = node.get("parent")
+            joint_id = node["id"]
+            if parent in joints and joint_id in joints:
+                x1, y1 = joints[parent]
+                x2, y2 = joints[joint_id]
+                color = (238, 238, 238, 230)
+                if joint_id.startswith("left_"):
+                    color = (110, 170, 255, 240)
+                elif joint_id.startswith("right_"):
+                    color = (255, 130, 120, 240)
+                elif node.get("type") in ("cloth", "prop"):
+                    color = (244, 201, 93, 240)
+                draw.line((x1 * scale, y1 * scale, x2 * scale, y2 * scale), fill=color, width=max(2, scale))
+
+        radius = max(2, scale)
+        for joint_id, point in joints.items():
+            x, y = point
+            node_type = node_map.get(joint_id, {}).get("type")
+            color = (237, 242, 239, 255)
+            if joint_id.startswith("left_"):
+                color = (110, 170, 255, 255)
+            elif joint_id.startswith("right_"):
+                color = (255, 130, 120, 255)
+            elif node_type in ("cloth", "prop"):
+                color = (244, 201, 93, 255)
+            draw.ellipse((x * scale - radius, y * scale - radius, x * scale + radius, y * scale + radius), fill=color)
+
+        path = output_dir / f"frame_{int(frame['index']):03d}_pose.png"
+        image.save(path)
+        guide_urls.append(asset_url(path))
+        frame["guide"] = asset_url(path)
+    return guide_urls
+
+
+def infer_action_kind(action_name: str, prompt: str) -> str:
+    text = f"{action_name} {prompt}".lower()
+    if any(keyword in text for keyword in ("walk", "run", "\u8d70", "\u884c\u8d70", "\u8dd1")):
+        return "walk"
+    if any(keyword in text for keyword in ("attack", "slash", "swing", "\u653b\u51fb", "\u6325\u780d")):
+        return "attack"
+    if any(keyword in text for keyword in ("idle", "breath", "\u5f85\u673a", "\u547c\u5438")):
+        return "idle"
+    if any(keyword in text for keyword in ("jump", "leap", "\u8df3")):
+        return "jump"
+    return "custom"
+
+
+def offset_joints(joints: dict[str, list[int]], dx: int = 0, dy: int = 0, only: set[str] | None = None) -> dict[str, list[int]]:
+    result = {joint: list(point) for joint, point in joints.items()}
+    targets = only or set(result)
+    for joint in targets:
+        if joint in result:
+            result[joint] = [result[joint][0] + dx, result[joint][1] + dy]
+    return result
+
+
+def build_generated_action_template(
+    project_id: str,
+    skeleton: dict[str, Any],
+    name: str,
+    prompt: str,
+    pixel_size: int,
+    frame_count: int,
+    loop: bool,
+) -> dict[str, Any]:
+    action_kind = infer_action_kind(name, prompt)
+    direction = infer_direction(name, prompt)
+    if action_kind == "walk":
+        template = build_builtin_action_template("walk_left", pixel_size, skeleton)
+        template["id"] = unique_id("template", name)
+        template["name"] = name or "Generated Walk"
+        template["source"] = "ai_generated"
+        template["direction"] = direction
+        template["prompt"] = prompt
+    elif action_kind == "attack":
+        template = build_builtin_action_template("attack_right", pixel_size, skeleton)
+        template["id"] = unique_id("template", name)
+        template["name"] = name or "Generated Attack"
+        template["source"] = "ai_generated"
+        template["direction"] = direction if direction != "front" else "right"
+        template["prompt"] = prompt
+    elif action_kind == "idle":
+        template = build_builtin_action_template("idle", pixel_size, skeleton)
+        template["id"] = unique_id("template", name)
+        template["name"] = name or "Generated Idle"
+        template["source"] = "ai_generated"
+        template["direction"] = direction
+        template["prompt"] = prompt
+    else:
+        base = default_joints_for_skeleton(skeleton, pixel_size)
+        frames = []
+        for index in range(frame_count):
+            phase = index / max(1, frame_count - 1)
+            wave = int(round(math.sin(phase * math.tau) * max(1, pixel_size * 0.05)))
+            lift = int(round((1 - abs(phase * 2 - 1)) * max(1, pixel_size * 0.08)))
+            joints = offset_joints(base, dy=-lift, only={"root", "pelvis", "chest", "neck", "head"})
+            joints = offset_joints(joints, dx=wave, only={"left_hand", "right_hand", "left_elbow", "right_elbow"})
+            frames.append(
+                {
+                    "index": index + 1,
+                    "label": f"ai pose {index + 1}",
+                    "joints": joints,
+                    "locks": {"left_foot": index % 2 == 0, "right_foot": index % 2 == 1},
+                }
+            )
+        template = {
+            "id": unique_id("template", name),
+            "name": name or "Generated Custom Action",
+            "source": "ai_generated",
+            "skeleton_id": skeleton["id"],
+            "pixel_size": pixel_size,
+            "direction": direction,
+            "loop": loop,
+            "prompt": prompt,
+            "frames": frames,
+        }
+
+    if len(template["frames"]) != frame_count:
+        if len(template["frames"]) > frame_count:
+            template["frames"] = template["frames"][:frame_count]
+        else:
+            while len(template["frames"]) < frame_count:
+                clone = json.loads(json.dumps(template["frames"][-1]))
+                clone["index"] = len(template["frames"]) + 1
+                clone["label"] = f"{clone.get('label', 'pose')} copy"
+                template["frames"].append(clone)
+        for index, frame in enumerate(template["frames"], start=1):
+            frame["index"] = index
+
+    template["skeleton_id"] = skeleton["id"]
+    template["pixel_size"] = pixel_size
+    template["loop"] = loop
+    template["created_at"] = now_iso()
+
+    template_dir = project_action_template_path(project_id, template["id"])
+    render_pose_guides(template, skeleton, template_dir / "guides")
+    write_json(template_dir / "template.json", template)
+    return template
+
+
 def project_path(project_id: str) -> Path:
     path = DATA_ROOT / project_id
     if not path.resolve().is_relative_to(DATA_ROOT.resolve()):
@@ -431,10 +801,11 @@ def action_frame_prompt(
     index: int,
     frame_count: int,
     pixel_size: int,
-    storyboard_frame: dict[str, Any],
-    storyboard: dict[str, Any],
+    template_frame: dict[str, Any],
+    action_template: dict[str, Any],
 ) -> str:
     spec = pixel_spec(pixel_size)
+    lock_text = ", ".join(joint for joint, locked in template_frame.get("locks", {}).items() if locked) or "none"
     return f"""
 Create one frame of a 2D pixel-art game character animation.
 Character identity: {character_prompt}
@@ -442,15 +813,12 @@ Action name: {action_name}
 Action description: {action_prompt}
 Target logical canvas: exactly {spec["canvas_width"]}x{spec["canvas_height"]} pixels.
 Target character height: about {spec["target_character_height"]} pixels inside that canvas.
-Storyboard intent: {storyboard["intent"]}; direction: {storyboard["direction"]}; camera: {storyboard_frame["camera"]}.
-Overall motion rule: {storyboard["global_motion"]}
-Frame: {index + 1} of {frame_count}; storyboard label: {storyboard_frame["label"]}.
-Frame pose plan:
-- Legs/feet: {storyboard_frame["legs"]}
-- Arms/hands: {storyboard_frame["arms"]}
-- Body/weight: {storyboard_frame["body"]}
-- Required change: {storyboard_frame["must_change"]}
-Use the attached front, side, and top reference images as identity references, not as edit targets.
+Action template: {action_template["name"]}; direction: {action_template.get("direction", "front")}; loop: {action_template.get("loop", True)}.
+Frame: {index + 1} of {frame_count}; pose label: {template_frame["label"]}; locked feet/anchors: {lock_text}.
+Use the attached front, side, and top character reference images as identity references, not as edit targets.
+Use the attached pose guide image as the exact skeleton pose for this frame.
+Pose requirement: place the character body, limbs, hands, feet, equipment, cloth anchors, and silhouette to match the pose guide as closely as possible.
+Do not invent a different pose. Do not ignore foot positions or limb angles from the pose guide.
 Style: strict low-resolution sprite frame, crisp hard-edged pixels, limited palette, consistent proportions, centered full-body game sprite.
 Design rule: draw as if the final artwork is created directly on a {pixel_size}x{pixel_size} pixel canvas, not as a high-resolution illustration.
 Detail rule: use large readable color blocks only; no tiny details smaller than {spec["min_feature_size"]}x{spec["min_feature_size"]} logical pixels, no micro-texture, no complex shading.
@@ -485,18 +853,22 @@ def save_action_frames(
     fps: int,
     references: list[Path],
     pixel_size: int,
-    storyboard: dict[str, Any],
+    action_template: dict[str, Any],
+    pose_guides: list[Path],
 ) -> dict[str, Any]:
     frames_dir = action_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
     frame_paths: list[Path] = []
     frames: list[str] = []
+    template_frames = action_template.get("frames", [])
     for idx in range(frame_count):
         path = frames_dir / f"frame_{idx + 1:03d}.png"
         if IMAGE_PROVIDER == "mock":
             make_pixel_character(character_prompt + " " + action_prompt, "front", idx, action_name).save(path)
         else:
             frame_references = [ref for ref in references if ref.exists()]
+            if idx < len(pose_guides) and pose_guides[idx].exists():
+                frame_references.append(pose_guides[idx])
             if frame_paths:
                 frame_references.append(frame_paths[-1])
             run_codex_imagegen(
@@ -508,8 +880,8 @@ def save_action_frames(
                     idx,
                     frame_count,
                     pixel_size,
-                    storyboard["frames"][idx],
-                    storyboard,
+                    template_frames[idx],
+                    action_template,
                 ),
                 frame_references,
             )
@@ -678,6 +1050,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_api(self, path: str) -> None:
         parts = [p for p in path.split("/") if p]
+        if self.command == "GET" and parts == ["api", "skeleton-presets"]:
+            self.send_json({"skeletons": builtin_skeleton_presets()})
+            return
+
         if self.command == "GET" and parts == ["api", "projects"]:
             self.send_json({"projects": list_projects(), "data_root": str(DATA_ROOT), "provider": provider_name()})
             return
@@ -703,12 +1079,46 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(project_detail(parts[2]))
             return
 
+        if self.command == "GET" and len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "action-templates":
+            self.send_json({"templates": list_action_template_summaries(parts[2])})
+            return
+
+        if self.command == "POST" and len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "action-templates" and parts[4] == "generate":
+            body = self.read_body()
+            project_id = parts[2]
+            character_id = body.get("character_id")
+            character = character_detail(project_id, character_id) if character_id else {}
+            skeleton = character.get("skeleton_config") or skeleton_by_id(body.get("skeleton_id", "humanoid_basic"))
+            pixel_size = normalize_pixel_size(body.get("pixel_size") or character.get("pixel_size", 64))
+            frame_count = max(2, min(int(body.get("frame_count", 6)), 12))
+            template = build_generated_action_template(
+                project_id,
+                skeleton,
+                body.get("name") or "custom_action",
+                body.get("prompt") or "",
+                pixel_size,
+                frame_count,
+                bool(body.get("loop", True)),
+            )
+            self.send_json(template, HTTPStatus.CREATED)
+            return
+
+        if self.command == "GET" and len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "action-templates":
+            project_id, template_id = parts[2], parts[4]
+            template_file = project_action_template_path(project_id, template_id) / "template.json"
+            if template_file.exists():
+                self.send_json(read_json(template_file, {}))
+                return
+            self.send_json(build_builtin_action_template(template_id, 64, skeleton_by_id("humanoid_basic")))
+            return
+
         if self.command == "POST" and len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "characters":
             body = self.read_body()
             project_id = parts[2]
             name = body.get("name") or "Untitled Character"
             prompt = body.get("prompt") or ""
             pixel_size = normalize_pixel_size(body.get("pixel_size", 64))
+            skeleton = skeleton_by_id(body.get("skeleton_id", "humanoid_basic"))
             character_id = unique_id("character", name)
             base = character_path(project_id, character_id)
             (base / "actions").mkdir(parents=True, exist_ok=True)
@@ -720,6 +1130,8 @@ class Handler(BaseHTTPRequestHandler):
                 "prompt": prompt,
                 "pixel_size": pixel_size,
                 "pixel_spec": pixel_spec(pixel_size),
+                "skeleton_id": skeleton["id"],
+                "skeleton_config": skeleton,
                 "provider": provider_name(),
                 "views": views,
                 "created_at": now_iso(),
@@ -740,19 +1152,24 @@ class Handler(BaseHTTPRequestHandler):
             character = character_detail(project_id, character_id)
             name = body.get("name") or "idle"
             prompt = body.get("prompt") or ""
-            frame_count = max(2, min(int(body.get("frame_count", 6)), 12))
             fps = max(1, min(int(body.get("fps", 8)), 24))
             action_id = unique_id("action", name)
             base = action_path(project_id, character_id, action_id)
             pixel_size = normalize_pixel_size(character.get("pixel_size", 64))
-            storyboard = build_action_storyboard(name, prompt, frame_count)
-            write_json(base / "storyboard.json", storyboard)
+            skeleton = character.get("skeleton_config") or skeleton_by_id(character.get("skeleton_id", "humanoid_basic"))
+            template_id = body.get("template_id") or "walk_left"
+            action_template = load_action_template(project_id, template_id, pixel_size, skeleton)
+            frame_count = len(action_template.get("frames", []))
+            guide_dir = base / "pose_guides"
+            render_pose_guides(action_template, skeleton, guide_dir)
+            pose_guides = [guide_dir / f"frame_{int(frame['index']):03d}_pose.png" for frame in action_template.get("frames", [])]
+            write_json(base / "action_template.json", action_template)
             reference_paths = [
                 character_path(project_id, character_id) / "views" / "front.png",
                 character_path(project_id, character_id) / "views" / "side.png",
                 character_path(project_id, character_id) / "views" / "top.png",
             ]
-            assets = save_action_frames(base, character.get("prompt", ""), prompt, name, frame_count, fps, reference_paths, pixel_size, storyboard)
+            assets = save_action_frames(base, character.get("prompt", ""), prompt, name, frame_count, fps, reference_paths, pixel_size, action_template, pose_guides)
             data = {
                 "id": action_id,
                 "character_id": character_id,
@@ -761,8 +1178,9 @@ class Handler(BaseHTTPRequestHandler):
                 "frame_count": frame_count,
                 "fps": fps,
                 "pixel_size": pixel_size,
-                "storyboard": storyboard,
-                "storyboard_path": str(base / "storyboard.json"),
+                "template_id": action_template.get("id"),
+                "action_template": action_template,
+                "pose_guides": [asset_url(path) for path in pose_guides],
                 "provider": provider_name(),
                 "reference_views": character.get("views", {}),
                 **assets,

@@ -133,7 +133,60 @@ D:\FrameGrid\generated-projects\project_xxx\characters\character_xxx\actions\wal
 创建项目 -> 进入项目 -> 创建角色 -> 生成三视图 -> 进入角色 -> 生成动作 -> 像素规整 -> 查看动作
 ```
 
-## 2. 像素规整方法建议
+## 2. 骨骼与动作模板流程
+
+后续动作生成不再只依赖文字分镜，而是引入骨骼配置和动作模板。
+
+### 骨骼配置
+
+骨骼配置定义角色有哪些节点，以及节点之间的父子连接关系。
+
+当前原型内置：
+
+```text
+humanoid_basic
+humanoid_weapon
+humanoid_cape
+```
+
+创建角色时选择骨骼配置，角色会保存这套配置的完整副本。后续动作模板会基于角色骨骼检查和生成。
+
+### 动作模板
+
+动作模板是一组已经摆好的 pose。每个 pose 同时包含：
+
+```text
+pose JSON：每个骨骼点的位置
+pose guide PNG：把 pose 渲染出来的骨骼参考图
+```
+
+生成动作时，系统不再临时让 AI 理解动作如何运动，而是：
+
+```text
+选择动作模板
+-> 读取模板中的多帧 pose
+-> 渲染每帧 pose guide
+-> 把角色三视图 + 当前帧 pose guide 发给 AI
+-> AI 生成最终角色动作帧
+```
+
+### AI 生成动作模板
+
+如果没有合适的动作模板，用户可以输入动作描述，让系统根据当前角色骨骼生成一套新的动作模板草稿。
+
+生成结果会保存到：
+
+```text
+generated-projects/<project>/action-templates/<template_id>/
+  template.json
+  guides/
+    frame_001_pose.png
+    frame_002_pose.png
+```
+
+这套模板可以继续被角色动作生成流程使用。后续会把模板编辑升级成可拖拽的骨骼编辑器。
+
+## 3. 像素规整方法建议
 
 原始想法是：把图片分成几乘几的格子，然后用 OpenCV 识别每个格子中出现最多的颜色，再把整个格子填成这个颜色。
 

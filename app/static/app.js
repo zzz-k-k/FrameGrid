@@ -3,6 +3,8 @@ const state = {
   project: null,
   character: null,
   action: null,
+  skeletons: [],
+  actionTemplates: [],
   dataRoot: "",
   provider: "",
   busy: false,
@@ -30,6 +32,18 @@ function setBusy(value) {
 function pixelOptions(selected = 64) {
   return pixelSizes
     .map((size) => `<option value="${size}" ${Number(selected) === size ? "selected" : ""}>${size}x${size}</option>`)
+    .join("");
+}
+
+function skeletonOptions(selected = "humanoid_basic") {
+  return state.skeletons
+    .map((skeleton) => `<option value="${skeleton.id}" ${selected === skeleton.id ? "selected" : ""}>${skeleton.name}</option>`)
+    .join("");
+}
+
+function templateOptions(selected = "walk_left") {
+  return state.actionTemplates
+    .map((template) => `<option value="${template.id}" ${selected === template.id ? "selected" : ""}>${template.name} · ${template.frame_count} 帧 · ${template.source}</option>`)
     .join("");
 }
 
@@ -83,13 +97,14 @@ function characterCard(character) {
         ${imageTile(character.views?.front, "正")}
         ${imageTile(character.views?.side, "侧")}
       </div>
-      <div class="meta">${character.prompt || "无提示词"}</div>
+      <div class="meta">${character.skeleton_config?.name || character.skeleton_id || "humanoid_basic"}<br />${character.prompt || "无提示词"}</div>
       <button class="primary" data-open-character="${character.id}">进入角色</button>
     </article>
   `;
 }
 
 function actionCard(action) {
+  const template = action.action_template || {};
   return `
     <article class="card">
       <div class="card-title">
@@ -99,29 +114,42 @@ function actionCard(action) {
       <div class="image-tile">
         <img class="action-preview" src="${action.preview}" alt="${action.name}" />
       </div>
-      <div class="meta">${action.storyboard?.intent || "动作"} · ${action.storyboard?.direction || "front"}<br />${action.fps} FPS</div>
+      <div class="meta">${template.name || action.template_id || "动作模板"} · ${template.direction || "front"}<br />${action.fps} FPS</div>
       <button class="primary" data-open-action="${action.id}">查看动作</button>
     </article>
   `;
 }
 
-function storyboardRows(action) {
-  const frames = action.storyboard?.frames || [];
-  if (!frames.length) return `<div class="empty">这个动作还没有分镜数据。</div>`;
+function templateCard(template) {
+  return `
+    <article class="card">
+      <div class="card-title">
+        <h3>${template.name}</h3>
+        <span class="badge">${template.frame_count} 帧</span>
+      </div>
+      <div class="meta">来源：${template.source}<br />骨骼：${template.skeleton_id}<br />方向：${template.direction}</div>
+    </article>
+  `;
+}
+
+function poseGuideTiles(action) {
+  const guides = action.pose_guides || action.action_template?.frames?.map((frame) => frame.guide).filter(Boolean) || [];
+  if (!guides.length) return `<div class="empty">这个动作还没有骨骼参考图。</div>`;
+  return guides.map((guide, index) => imageTile(guide, `pose ${index + 1}`)).join("");
+}
+
+function poseRows(action) {
+  const frames = action.action_template?.frames || [];
+  if (!frames.length) return `<div class="empty">这个动作还没有 pose 数据。</div>`;
   return frames
     .map(
       (frame) => `
         <article class="card">
           <div class="card-title">
-            <h3>Frame ${frame.frame}: ${frame.label}</h3>
-            <span class="badge">${frame.camera}</span>
+            <h3>Frame ${frame.index}: ${frame.label}</h3>
+            <span class="badge">${Object.keys(frame.joints || {}).length} 点</span>
           </div>
-          <div class="meta">
-            腿/脚：${frame.legs}<br />
-            手/臂：${frame.arms}<br />
-            身体：${frame.body}<br />
-            要求：${frame.must_change}
-          </div>
+          <div class="meta">锁定：${Object.entries(frame.locks || {}).filter(([, locked]) => locked).map(([joint]) => joint).join(", ") || "无"}</div>
         </article>
       `,
     )
@@ -154,7 +182,7 @@ function renderHome() {
       <div class="topbar">
         <div>
           <h2>项目列表</h2>
-          <p>创建项目后，角色和动作都会保存在独立项目文件夹里。</p>
+          <p>创建项目后，角色、骨骼和动作模板都会保存在独立项目文件夹里。</p>
         </div>
       </div>
       ${state.projects.length ? `<section class="grid">${state.projects.map(projectCard).join("")}</section>` : `<div class="empty">还没有项目，先创建一个。</div>`}
@@ -180,11 +208,14 @@ function renderProject() {
           <label>目标像素尺寸
             <select name="pixel_size">${pixelOptions(64)}</select>
           </label>
+          <label>骨骼配置
+            <select name="skeleton_id">${skeletonOptions("humanoid_basic")}</select>
+          </label>
           <label>角色提示词
             <textarea name="prompt">一个穿短斗篷的像素风冒险者，清晰轮廓，适合 2D 游戏动画</textarea>
           </label>
           <button class="primary" ${state.busy ? "disabled" : ""}>生成三视图</button>
-          <div class="status">${state.busy ? "正在调用 Codex 生成低分辨率三视图，并自动转成透明背景..." : "提示词会要求模型按目标尺寸直接设计，避免复杂插画化。"}</div>
+          <div class="status">${state.busy ? "正在调用 Codex 生成低分辨率三视图，并自动转成透明背景..." : "角色会绑定一套骨骼配置，后续动作模板会按这套骨骼检查和生成。"}</div>
         </form>
       </section>
     `,
@@ -192,7 +223,7 @@ function renderProject() {
       <div class="topbar">
         <div>
           <h2>${project.name}</h2>
-          <p>先创建角色三视图，再进入角色生成动作。</p>
+          <p>先创建角色三视图，再进入角色生成或选择动作模板。</p>
         </div>
       </div>
       ${project.characters.length ? `<section class="grid">${project.characters.map(characterCard).join("")}</section>` : `<div class="empty">这个项目还没有角色。</div>`}
@@ -203,6 +234,8 @@ function renderProject() {
 function renderCharacter() {
   const character = state.character;
   const size = character.pixel_size || 64;
+  const skeletonName = character.skeleton_config?.name || character.skeleton_id || "Humanoid Basic";
+  const skeletonNodeCount = character.skeleton_config?.nodes?.length || 19;
   layout(
     `
       <button class="ghost" data-back-project>返回项目</button>
@@ -211,48 +244,50 @@ function renderCharacter() {
         <div class="crumb">${character.path}</div>
       </section>
       <section class="side-section">
-        <h2>像素规格</h2>
-        <div class="crumb">${size}x${size} · 主体约 ${character.pixel_spec?.target_character_height || Math.round(size * 0.75)}px 高</div>
+        <h2>骨骼配置</h2>
+        <div class="crumb">${skeletonName}<br />${skeletonNodeCount} 个节点</div>
       </section>
       <section class="panel">
-        <h3>生成动作</h3>
+        <h3>用模板生成动作</h3>
         <form class="form" id="actionForm">
           <label>动作名称
             <input name="name" value="walk left" />
           </label>
+          <label>选择动作模板
+            <select name="template_id">${templateOptions("walk_left")}</select>
+          </label>
           <label>动作提示词
-            <textarea name="prompt">向左行走循环，双腿明显前后交替，手臂反向摆动，身体轻微上下起伏</textarea>
+            <textarea name="prompt">根据动作模板骨骼参考图生成角色帧，保持角色外观一致</textarea>
+          </label>
+          <label>FPS
+            <input name="fps" type="number" min="1" max="24" value="8" />
+          </label>
+          <button class="primary" ${state.busy ? "disabled" : ""}>生成动作帧</button>
+          <div class="status">${state.busy ? "正在读取动作模板、渲染骨骼参考图，再逐帧调用 Codex 生图..." : "动作模板已经包含多帧 pose，AI 只负责按 pose guide 画角色。"}</div>
+        </form>
+      </section>
+      <section class="panel">
+        <h3>AI 生成新动作模板</h3>
+        <form class="form" id="templateForm">
+          <label>模板名称
+            <input name="name" value="roll left" />
+          </label>
+          <label>动作描述
+            <textarea name="prompt">向左翻滚后站起，动作幅度清晰，脚底最终回到地面</textarea>
           </label>
           <div class="split">
             <label>帧数
               <input name="frame_count" type="number" min="2" max="12" value="6" />
             </label>
-            <label>FPS
-              <input name="fps" type="number" min="1" max="24" value="8" />
-            </label>
-          </div>
-          <button class="primary" ${state.busy ? "disabled" : ""}>生成动作</button>
-          <div class="status">${state.busy ? "正在先生成动作分镜，再逐帧调用 Codex 生图..." : "动作会先生成 storyboard，再把每帧姿势写进生图提示词。"}</div>
-        </form>
-      </section>
-      <section class="panel">
-        <h3>像素规整</h3>
-        <form class="form" id="pixelForm">
-          <div class="split">
-            <label>网格
-              <select name="grid_size">${pixelOptions(size)}</select>
-            </label>
-            <label>颜色数
-              <select name="palette_limit">
-                <option>16</option>
-                <option selected>24</option>
-                <option>32</option>
-                <option>48</option>
+            <label>循环
+              <select name="loop">
+                <option value="true">是</option>
+                <option value="false" selected>否</option>
               </select>
             </label>
           </div>
-          <button ${state.busy ? "disabled" : ""}>规整三视图和动作帧</button>
-          <div class="status" id="pixelStatus">输出到角色 pixelated 文件夹。</div>
+          <button ${state.busy ? "disabled" : ""}>生成并保存模板</button>
+          <div class="status">${state.busy ? "正在生成动作模板草稿..." : "会根据当前骨骼生成多帧 pose 和骨骼参考图。"}</div>
         </form>
       </section>
     `,
@@ -273,12 +308,17 @@ function renderCharacter() {
           </div>
         </section>
         <section class="panel">
-          <h3>生成说明</h3>
-          <div class="meta">当前 Provider：${character.provider}<br />目标尺寸：${size}x${size}<br />图片由本地 Codex 子进程调用 imagegen skill 生成，并自动处理为透明背景。</div>
+          <h3>角色规格</h3>
+          <div class="meta">Provider：${character.provider}<br />目标尺寸：${size}x${size}<br />主体高度：${character.pixel_spec?.target_character_height || Math.round(size * 0.75)}px<br />骨骼：${skeletonName}</div>
         </section>
       </div>
       <div style="height: 18px"></div>
-      ${character.actions.length ? `<section class="grid">${character.actions.map(actionCard).join("")}</section>` : `<div class="empty">还没有动作，先生成一套 walk left / idle / attack。</div>`}
+      <section class="panel">
+        <h3>可用动作模板</h3>
+        <div class="grid">${state.actionTemplates.map(templateCard).join("")}</div>
+      </section>
+      <div style="height: 18px"></div>
+      ${character.actions.length ? `<section class="grid">${character.actions.map(actionCard).join("")}</section>` : `<div class="empty">还没有动作，先选择模板生成一套。</div>`}
     `,
   );
 }
@@ -291,11 +331,7 @@ function renderAction() {
       <section class="side-section">
         <h2>动作信息</h2>
         <div class="crumb">${action.path}</div>
-        <div class="meta">${action.frame_count} 帧，${action.fps} FPS<br />${action.pixel_size || 64}x${action.pixel_size || 64}</div>
-      </section>
-      <section class="side-section">
-        <h2>分镜</h2>
-        <div class="crumb">${action.storyboard?.intent || "custom"} · ${action.storyboard?.direction || "front"}</div>
+        <div class="meta">${action.frame_count} 帧，${action.fps} FPS<br />模板：${action.action_template?.name || action.template_id}</div>
       </section>
     `,
     `
@@ -313,13 +349,18 @@ function renderAction() {
       </section>
       <div style="height: 18px"></div>
       <section class="panel">
-        <h3>Spritesheet</h3>
-        <img class="sheet" src="${action.spritesheet}" alt="spritesheet" />
+        <h3>骨骼参考图</h3>
+        <div class="frames">${poseGuideTiles(action)}</div>
       </section>
       <div style="height: 18px"></div>
       <section class="panel">
-        <h3>动作分镜</h3>
-        <div class="grid">${storyboardRows(action)}</div>
+        <h3>Pose 数据</h3>
+        <div class="grid">${poseRows(action)}</div>
+      </section>
+      <div style="height: 18px"></div>
+      <section class="panel">
+        <h3>Spritesheet</h3>
+        <img class="sheet" src="${action.spritesheet}" alt="spritesheet" />
       </section>
       <div style="height: 18px"></div>
       <section class="panel">
@@ -337,6 +378,11 @@ function render() {
   else renderHome();
 }
 
+async function loadSkeletons() {
+  const data = await api("/api/skeleton-presets");
+  state.skeletons = data.skeletons;
+}
+
 async function loadProjects() {
   const data = await api("/api/projects");
   state.projects = data.projects;
@@ -345,16 +391,23 @@ async function loadProjects() {
   render();
 }
 
+async function loadActionTemplates(projectId) {
+  const data = await api(`/api/projects/${projectId}/action-templates`);
+  state.actionTemplates = data.templates;
+}
+
 async function openProject(id) {
   state.action = null;
   state.character = null;
   state.project = await api(`/api/projects/${id}`);
+  await loadActionTemplates(id);
   render();
 }
 
 async function openCharacter(id) {
   state.action = null;
   state.character = await api(`/api/projects/${state.project.id}/characters/${id}`);
+  await loadActionTemplates(state.project.id);
   render();
 }
 
@@ -379,18 +432,24 @@ document.addEventListener("submit", async (event) => {
       await openProject(state.project.id);
       await openCharacter(character.id);
     }
+    if (form.id === "templateForm") {
+      const template = await api(`/api/projects/${state.project.id}/action-templates/generate`, {
+        method: "POST",
+        body: {
+          ...data,
+          character_id: state.character.id,
+          pixel_size: state.character.pixel_size,
+          loop: data.loop === "true",
+        },
+      });
+      await loadActionTemplates(state.project.id);
+      render();
+      alert(`已生成动作模板：${template.name}`);
+    }
     if (form.id === "actionForm") {
       const action = await api(`/api/projects/${state.project.id}/characters/${state.character.id}/actions`, { method: "POST", body: data });
       await openCharacter(state.character.id);
       await openAction(action.id);
-    }
-    if (form.id === "pixelForm") {
-      const result = await api(`/api/projects/${state.project.id}/characters/${state.character.id}/pixelate`, { method: "POST", body: data });
-      await openCharacter(state.character.id);
-      setTimeout(() => {
-        const status = document.querySelector("#pixelStatus");
-        if (status) status.textContent = `已规整 ${result.count} 张图片。`;
-      }, 0);
     }
   } catch (error) {
     alert(error.message);
@@ -419,6 +478,9 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.openAction) await openAction(target.dataset.openAction);
 });
 
-loadProjects().catch((error) => {
+(async function start() {
+  await loadSkeletons();
+  await loadProjects();
+})().catch((error) => {
   app.innerHTML = `<div class="empty">${error.message}</div>`;
 });
