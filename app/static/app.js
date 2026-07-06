@@ -5,6 +5,7 @@ const state = {
   action: null,
   skeletons: [],
   actionTemplates: [],
+  selectedTemplateId: "walk_left",
   dataRoot: "",
   provider: "",
   busy: false,
@@ -39,6 +40,192 @@ function skeletonOptions(selected = "humanoid_basic") {
   return state.skeletons
     .map((skeleton) => `<option value="${skeleton.id}" ${selected === skeleton.id ? "selected" : ""}>${skeleton.name}</option>`)
     .join("");
+}
+
+function skeletonById(id = "humanoid_basic") {
+  return state.skeletons.find((skeleton) => skeleton.id === id) || state.skeletons[0] || null;
+}
+
+function characterSkeleton() {
+  return state.character?.skeleton_config || skeletonById(state.character?.skeleton_id || "humanoid_basic");
+}
+
+function templateById(id) {
+  return state.actionTemplates.find((template) => template.id === id) || state.actionTemplates[0] || null;
+}
+
+function selectedActionTemplate() {
+  return templateById(state.selectedTemplateId) || templateById("walk_left");
+}
+
+function templateFrames(template) {
+  return template?.preview_frames || template?.frames || [];
+}
+
+function templateSkeleton(template) {
+  return characterSkeleton() || skeletonById(template?.skeleton_id || "humanoid_basic");
+}
+
+function skeletonPreviewMarkup(source, skeletonId = "humanoid_basic", className = "") {
+  return `
+    <div class="skeleton-preview">
+      <canvas
+        class="skeleton-canvas ${className}"
+        width="220"
+        height="220"
+        data-skeleton-preview="${source}"
+        data-skeleton-id="${skeletonId}"
+      ></canvas>
+    </div>
+  `;
+}
+
+function pointColor(node) {
+  if (node.type === "prop") return "#f4c95d";
+  if (node.type === "cloth") return "#c987ff";
+  if (node.id?.startsWith("left_")) return "#79b8ff";
+  if (node.id?.startsWith("right_")) return "#ff8f8f";
+  if (node.type === "anchor") return "#7bd88f";
+  return "#edf2ef";
+}
+
+function drawSkeletonFigure(canvas, skeleton, joints = null, pixelSize = null) {
+  if (!canvas || !skeleton) return;
+  const context = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  const logicalSize = Number(pixelSize || skeleton.canvas?.[0] || 64);
+  const canvasSize = joints ? [logicalSize, logicalSize] : skeleton.canvas || [64, 64];
+  const nodes = (skeleton.nodes || []).filter((node) => Array.isArray(node.default));
+  const nodeMap = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  const pointMap = joints || Object.fromEntries(nodes.map((node) => [node.id, node.default]));
+  const padding = 18;
+  const scale = Math.min((width - padding * 2) / canvasSize[0], (height - padding * 2) / canvasSize[1]);
+  const offsetX = (width - canvasSize[0] * scale) / 2;
+  const offsetY = (height - canvasSize[1] * scale) / 2;
+  const mapPoint = (point) => [offsetX + point[0] * scale, offsetY + point[1] * scale];
+
+  context.clearRect(0, 0, width, height);
+  context.fillStyle = "#111314";
+  context.fillRect(0, 0, width, height);
+
+  context.strokeStyle = "rgba(255,255,255,0.07)";
+  context.lineWidth = 1;
+  for (let x = 0; x <= canvasSize[0]; x += 8) {
+    const [screenX] = mapPoint([x, 0]);
+    context.beginPath();
+    context.moveTo(screenX, offsetY);
+    context.lineTo(screenX, offsetY + canvasSize[1] * scale);
+    context.stroke();
+  }
+  for (let y = 0; y <= canvasSize[1]; y += 8) {
+    const [, screenY] = mapPoint([0, y]);
+    context.beginPath();
+    context.moveTo(offsetX, screenY);
+    context.lineTo(offsetX + canvasSize[0] * scale, screenY);
+    context.stroke();
+  }
+
+  const skeletonLogicalHeight = Number(skeleton.canvas?.[1] || 64);
+  const baseGroundY = Number(skeleton.ground_y ?? skeletonLogicalHeight - 8);
+  const groundY = joints ? (baseGroundY / skeletonLogicalHeight) * canvasSize[1] : baseGroundY;
+  const [, groundScreenY] = mapPoint([0, groundY]);
+  context.strokeStyle = "rgba(244,201,93,0.45)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(offsetX, groundScreenY);
+  context.lineTo(offsetX + canvasSize[0] * scale, groundScreenY);
+  context.stroke();
+
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  for (const node of nodes) {
+    const parent = node.parent ? nodeMap[node.parent] : null;
+    if (!parent) continue;
+    const parentPoint = pointMap[parent.id];
+    const nodePoint = pointMap[node.id];
+    if (!parentPoint || !nodePoint) continue;
+    const [x1, y1] = mapPoint(parentPoint);
+    const [x2, y2] = mapPoint(nodePoint);
+    context.strokeStyle = joints ? pointColor(node) : "rgba(237,242,239,0.58)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(x1, y1);
+    context.lineTo(x2, y2);
+    context.stroke();
+  }
+
+  for (const node of nodes) {
+    const point = pointMap[node.id];
+    if (!point) continue;
+    const [x, y] = mapPoint(point);
+    context.fillStyle = pointColor(node);
+    context.strokeStyle = "#0f1112";
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(x, y, node.type === "anchor" ? 5 : 4.2, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+  }
+}
+
+function drawSkeletonCanvas(canvas, skeleton) {
+  drawSkeletonFigure(canvas, skeleton);
+}
+
+function drawSkeletonPreviews() {
+  document.querySelectorAll("canvas[data-skeleton-preview]").forEach((canvas) => {
+    const source = canvas.dataset.skeletonPreview;
+    const skeleton = source === "character" ? characterSkeleton() : skeletonById(canvas.dataset.skeletonId);
+    drawSkeletonCanvas(canvas, skeleton);
+  });
+}
+
+function drawPosePreviews() {
+  document.querySelectorAll("canvas[data-pose-preview]").forEach((canvas) => {
+    const template = templateById(canvas.dataset.templateId);
+    const frame = templateFrames(template).find((item) => String(item.index) === canvas.dataset.frameIndex);
+    drawSkeletonFigure(canvas, templateSkeleton(template), frame?.joints || null, template?.pixel_size || state.character?.pixel_size || 64);
+  });
+}
+
+function templatePoseStrip(template, className = "") {
+  const frames = templateFrames(template);
+  if (!template || !frames.length) return `<div class="empty compact">这个模板还没有 pose 数据。</div>`;
+  return `
+    <div class="pose-strip ${className}">
+      ${frames
+        .map(
+          (frame) => `
+            <div class="pose-frame" title="Frame ${frame.index}: ${frame.label || ""}">
+              <canvas
+                class="pose-canvas"
+                width="132"
+                height="132"
+                data-pose-preview="template"
+                data-template-id="${template.id}"
+                data-frame-index="${frame.index}"
+              ></canvas>
+              <span>${frame.index}</span>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function selectedTemplatePreviewMarkup(template = selectedActionTemplate()) {
+  if (!template) return `<div class="empty compact">还没有可用动作模板。</div>`;
+  return `
+    <div class="template-preview-panel">
+      <div class="preview-head">
+        <strong>动作模板预览</strong>
+        <span>${template.name} · ${template.frame_count} 帧 · ${template.direction}</span>
+      </div>
+      ${templatePoseStrip(template, "large")}
+    </div>
+  `;
 }
 
 function templateOptions(selected = "walk_left") {
@@ -122,11 +309,12 @@ function actionCard(action) {
 
 function templateCard(template) {
   return `
-    <article class="card">
+    <article class="card template-card">
       <div class="card-title">
         <h3>${template.name}</h3>
         <span class="badge">${template.frame_count} 帧</span>
       </div>
+      ${templatePoseStrip(template, "mini")}
       <div class="meta">来源：${template.source}<br />骨骼：${template.skeleton_id}<br />方向：${template.direction}</div>
     </article>
   `;
@@ -211,6 +399,7 @@ function renderProject() {
           <label>骨骼配置
             <select name="skeleton_id">${skeletonOptions("humanoid_basic")}</select>
           </label>
+          ${skeletonPreviewMarkup("select", "humanoid_basic")}
           <label>角色提示词
             <textarea name="prompt">一个穿短斗篷的像素风冒险者，清晰轮廓，适合 2D 游戏动画</textarea>
           </label>
@@ -235,7 +424,10 @@ function renderCharacter() {
   const character = state.character;
   const size = character.pixel_size || 64;
   const skeletonName = character.skeleton_config?.name || character.skeleton_id || "Humanoid Basic";
+  const skeletonId = character.skeleton_config?.id || character.skeleton_id || "humanoid_basic";
   const skeletonNodeCount = character.skeleton_config?.nodes?.length || 19;
+  const selectedTemplate = selectedActionTemplate();
+  const selectedTemplateId = selectedTemplate?.id || "walk_left";
   layout(
     `
       <button class="ghost" data-back-project>返回项目</button>
@@ -246,6 +438,7 @@ function renderCharacter() {
       <section class="side-section">
         <h2>骨骼配置</h2>
         <div class="crumb">${skeletonName}<br />${skeletonNodeCount} 个节点</div>
+        ${skeletonPreviewMarkup("character", skeletonId, "large")}
       </section>
       <section class="panel">
         <h3>用模板生成动作</h3>
@@ -254,8 +447,9 @@ function renderCharacter() {
             <input name="name" value="walk left" />
           </label>
           <label>选择动作模板
-            <select name="template_id">${templateOptions("walk_left")}</select>
+            <select name="template_id">${templateOptions(selectedTemplateId)}</select>
           </label>
+          <div id="selectedTemplatePreview">${selectedTemplatePreviewMarkup(selectedTemplate)}</div>
           <label>动作提示词
             <textarea name="prompt">根据动作模板骨骼参考图生成角色帧，保持角色外观一致</textarea>
           </label>
@@ -376,6 +570,10 @@ function render() {
   else if (state.character) renderCharacter();
   else if (state.project) renderProject();
   else renderHome();
+  requestAnimationFrame(() => {
+    drawSkeletonPreviews();
+    drawPosePreviews();
+  });
 }
 
 async function loadSkeletons() {
@@ -394,6 +592,9 @@ async function loadProjects() {
 async function loadActionTemplates(projectId) {
   const data = await api(`/api/projects/${projectId}/action-templates`);
   state.actionTemplates = data.templates;
+  if (!templateById(state.selectedTemplateId) && state.actionTemplates.length) {
+    state.selectedTemplateId = state.actionTemplates[0].id;
+  }
 }
 
 async function openProject(id) {
@@ -443,6 +644,7 @@ document.addEventListener("submit", async (event) => {
         },
       });
       await loadActionTemplates(state.project.id);
+      state.selectedTemplateId = template.id;
       render();
       alert(`已生成动作模板：${template.name}`);
     }
@@ -455,6 +657,24 @@ document.addEventListener("submit", async (event) => {
     alert(error.message);
   } finally {
     setBusy(false);
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target.matches('select[name="skeleton_id"]')) {
+    document.querySelectorAll('canvas[data-skeleton-preview="select"]').forEach((canvas) => {
+      canvas.dataset.skeletonId = target.value;
+    });
+    drawSkeletonPreviews();
+  }
+  if (target.matches('select[name="template_id"]')) {
+    state.selectedTemplateId = target.value;
+    const preview = document.querySelector("#selectedTemplatePreview");
+    if (preview) {
+      preview.innerHTML = selectedTemplatePreviewMarkup(templateById(target.value));
+      drawPosePreviews();
+    }
   }
 });
 

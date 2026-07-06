@@ -1,4 +1,5 @@
 generated-projects/
 .codex-imagegen-probe/
+logs/
 __pycache__/
 *.pyc

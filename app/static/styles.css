@@ -265,6 +265,88 @@ label {
   height: 216px;
 }
 
+.skeleton-preview {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #151819;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.skeleton-canvas {
+  width: 100%;
+  max-width: 220px;
+  aspect-ratio: 1;
+  display: block;
+  image-rendering: pixelated;
+}
+
+.skeleton-canvas.large {
+  max-width: 260px;
+}
+
+.template-preview-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #151819;
+  padding: 10px;
+}
+
+.preview-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.preview-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.pose-strip {
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.pose-frame {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pose-canvas {
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #111314;
+  display: block;
+  image-rendering: pixelated;
+}
+
+.pose-strip.large .pose-canvas {
+  width: 74px;
+  height: 74px;
+}
+
+.template-card .pose-strip {
+  margin: -2px 0;
+}
+
 .label {
   color: var(--muted);
   font-size: 12px;
@@ -291,6 +373,12 @@ label {
   color: var(--muted);
   padding: 28px;
   text-align: center;
+}
+
+.empty.compact {
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 12px;
 }
 
 .action-preview {
@@ -320,6 +408,11 @@ label {
 
   .topbar {
     align-items: stretch;
+    flex-direction: column;
+  }
+
+  .preview-head {
+    align-items: flex-start;
     flex-direction: column;
   }
 }

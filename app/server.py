@@ -180,14 +180,27 @@ def project_action_template_path(project_id: str, template_id: str) -> Path:
 
 
 def template_summary(template: dict[str, Any]) -> dict[str, Any]:
+    frames = template.get("frames", [])
     return {
         "id": template["id"],
         "name": template["name"],
         "source": template.get("source", "builtin"),
         "skeleton_id": template.get("skeleton_id"),
-        "frame_count": len(template.get("frames", [])),
+        "pixel_size": template.get("pixel_size", 64),
+        "frame_count": len(frames),
         "direction": template.get("direction", "front"),
         "loop": template.get("loop", True),
+        "preview_frames": [
+            {
+                "index": frame.get("index"),
+                "label": frame.get("label", f"frame {index + 1}"),
+                "joints": frame.get("joints", {}),
+                "locks": frame.get("locks", {}),
+                "guide": frame.get("guide"),
+            }
+            for index, frame in enumerate(frames)
+            if isinstance(frame, dict)
+        ],
     }
 
 
@@ -280,9 +293,9 @@ def build_builtin_action_template(template_id: str, pixel_size: int, skeleton: d
 
 def list_action_template_summaries(project_id: str) -> list[dict[str, Any]]:
     templates = [
-        template_summary({"id": "walk_left", "name": "Walk Left", "source": "builtin", "skeleton_id": "humanoid_basic", "direction": "left", "loop": True, "frames": [None] * 6}),
-        template_summary({"id": "idle", "name": "Idle", "source": "builtin", "skeleton_id": "humanoid_basic", "direction": "front", "loop": True, "frames": [None] * 4}),
-        template_summary({"id": "attack_right", "name": "Attack Right", "source": "builtin", "skeleton_id": "humanoid_weapon", "direction": "right", "loop": False, "frames": [None] * 6}),
+        template_summary(build_builtin_action_template("walk_left", 64, skeleton_by_id("humanoid_basic"))),
+        template_summary(build_builtin_action_template("idle", 64, skeleton_by_id("humanoid_basic"))),
+        template_summary(build_builtin_action_template("attack_right", 64, skeleton_by_id("humanoid_weapon"))),
     ]
     custom_root = project_path(project_id) / "action-templates"
     if custom_root.exists():
@@ -298,6 +311,12 @@ def load_action_template(project_id: str, template_id: str, pixel_size: int, ske
         template["source"] = template.get("source", "custom")
         return template
     return build_builtin_action_template(template_id, pixel_size, skeleton)
+
+
+def builtin_template_skeleton(template_id: str) -> dict[str, Any]:
+    if template_id == "attack_right":
+        return skeleton_by_id("humanoid_weapon")
+    return skeleton_by_id("humanoid_basic")
 
 
 def render_pose_guides(template: dict[str, Any], skeleton: dict[str, Any], output_dir: Path) -> list[str]:
@@ -1109,7 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
             if template_file.exists():
                 self.send_json(read_json(template_file, {}))
                 return
-            self.send_json(build_builtin_action_template(template_id, 64, skeleton_by_id("humanoid_basic")))
+            self.send_json(build_builtin_action_template(template_id, 64, builtin_template_skeleton(template_id)))
             return
 
         if self.command == "POST" and len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "characters":
