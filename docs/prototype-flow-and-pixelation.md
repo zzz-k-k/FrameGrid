@@ -212,10 +212,20 @@ generated-projects/<project>/action-templates/<template_id>/
 - OpenCV `INTER_NEAREST` 或 Pillow 最近邻放大，确保边缘是硬像素。
 - 对动画帧使用同一个画布尺寸、同一个调色板策略和同一套锚点规则，避免播放时闪烁或抖动。
 
-因此，原型中采用：
+因此，原型中保留原有兜底方案：
 
 ```text
 OpenCV 下采样 + 调色板量化 + 最近邻放大
 ```
 
-后续如果需要更接近“格子内主色填充”的严格算法，可以在规整参数里增加 `dominant-cell` 模式，与当前 `area-quantize` 模式并存。
+同时新增 `perfect-pixel` 模式，接入 `theamusing/perfectPixel`：
+
+```text
+自动检测像素网格
+-> 根据边缘强度微调网格线
+-> 每个格子用 center / median / majority 采样出代表色
+-> 保留透明通道并阈值化
+-> 最近邻放大回预览尺寸
+```
+
+当前角色页的 `完美像素化` 按钮默认使用 `perfectPixel 自动网格`。如果自动检测失败，系统会回退到原来的 OpenCV 目标尺寸规整，避免生成流程中断。也可以手动选择 `perfectPixel 指定尺寸` 或 `OpenCV 目标尺寸`。

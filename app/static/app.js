@@ -344,6 +344,24 @@ function poseRows(action) {
     .join("");
 }
 
+function pixelatedOutputPanel(character) {
+  const pixelated = character.pixelated;
+  const outputs = pixelated?.outputs || [];
+  if (!outputs.length) return "";
+  const visibleOutputs = outputs.slice(0, 16);
+  return `
+    <div style="height: 18px"></div>
+    <section class="panel">
+      <div class="card-title">
+        <h3>最新完美像素化输出</h3>
+        <span class="badge">${pixelated.count || outputs.length} 张</span>
+      </div>
+      <div class="meta">方法：${pixelated.method || "perfect-pixel"} · 采样：${pixelated.sample_method || "majority"} · 兜底次数：${pixelated.fallback_count || 0}</div>
+      <div class="frames">${visibleOutputs.map((src, index) => imageTile(src, `pixel ${index + 1}`)).join("")}</div>
+    </section>
+  `;
+}
+
 function renderHome() {
   layout(
     `
@@ -484,6 +502,35 @@ function renderCharacter() {
           <div class="status">${state.busy ? "正在生成动作模板草稿..." : "会根据当前骨骼生成多帧 pose 和骨骼参考图。"}</div>
         </form>
       </section>
+      <section class="panel">
+        <h3>完美像素化</h3>
+        <form class="form" id="pixelateForm">
+          <label>规整模式
+            <select name="method">
+              <option value="perfect-pixel" selected>perfectPixel 自动网格</option>
+              <option value="perfect-pixel-target">perfectPixel 指定尺寸</option>
+              <option value="opencv-area">OpenCV 目标尺寸</option>
+            </select>
+          </label>
+          <label>格内采样
+            <select name="sample_method">
+              <option value="majority" selected>主色聚类</option>
+              <option value="median">中位数</option>
+              <option value="center">中心点</option>
+            </select>
+          </label>
+          <div class="split">
+            <label>尺寸/兜底
+              <select name="grid_size">${pixelOptions(size)}</select>
+            </label>
+            <label>调色板
+              <input name="palette_limit" type="number" min="4" max="64" value="24" />
+            </label>
+          </div>
+          <button ${state.busy ? "disabled" : ""}>生成完美像素图</button>
+          <div class="status">${state.busy ? "正在用 perfectPixel 对三视图和动作帧做网格规整..." : "会输出到角色目录的 pixelated 文件夹，并保留透明背景。"}</div>
+        </form>
+      </section>
     `,
     `
       <div class="topbar">
@@ -506,6 +553,7 @@ function renderCharacter() {
           <div class="meta">Provider：${character.provider}<br />目标尺寸：${size}x${size}<br />主体高度：${character.pixel_spec?.target_character_height || Math.round(size * 0.75)}px<br />骨骼：${skeletonName}</div>
         </section>
       </div>
+      ${pixelatedOutputPanel(character)}
       <div style="height: 18px"></div>
       <section class="panel">
         <h3>可用动作模板</h3>
@@ -652,6 +700,18 @@ document.addEventListener("submit", async (event) => {
       const action = await api(`/api/projects/${state.project.id}/characters/${state.character.id}/actions`, { method: "POST", body: data });
       await openCharacter(state.character.id);
       await openAction(action.id);
+    }
+    if (form.id === "pixelateForm") {
+      const result = await api(`/api/projects/${state.project.id}/characters/${state.character.id}/pixelate`, {
+        method: "POST",
+        body: {
+          ...data,
+          grid_size: Number(data.grid_size),
+          palette_limit: Number(data.palette_limit),
+        },
+      });
+      await openCharacter(state.character.id);
+      alert(`已生成 ${result.count} 张完美像素图，回退 ${result.fallback_count || 0} 张`);
     }
   } catch (error) {
     alert(error.message);

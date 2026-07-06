@@ -20,6 +20,11 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
+try:
+    from perfect_pixel import perfect_pixel as perfect_pixel_core
+except Exception:
+    perfect_pixel_core = None
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_ROOT = ROOT / "generated-projects"
@@ -956,15 +961,120 @@ def quantize_rgb(rgb: np.ndarray, palette_limit: int) -> np.ndarray:
     return centers[labels.flatten()].reshape(rgb.shape)
 
 
-def pixelate_image(source: Path, output: Path, grid_size: int, palette_limit: int, alpha_threshold: int = 16) -> None:
+def quantize_visible_rgba(rgba: np.ndarray, palette_limit: int, alpha_threshold: int) -> np.ndarray:
+    if palette_limit <= 0:
+        return rgba
+    result = rgba.copy()
+    visible = result[:, :, 3] >= alpha_threshold
+    if not np.any(visible):
+        result[:, :, 3] = 0
+        return result
+    rgb = result[:, :, :3]
+    visible_pixels = rgb[visible]
+    unique = np.unique(visible_pixels, axis=0)
+    if len(unique) > palette_limit:
+        pixels = visible_pixels.astype(np.float32)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 24, 1.0)
+        _, labels, centers = cv2.kmeans(pixels, palette_limit, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+        centers = np.clip(centers, 0, 255).astype(np.uint8)
+        rgb[visible] = centers[labels.flatten()]
+    rgb[~visible] = 0
+    result[:, :, :3] = rgb
+    result[:, :, 3] = np.where(visible, 255, 0).astype(np.uint8)
+    return result
+
+
+def pixelate_image_opencv(source: Path, output: Path, grid_size: int, palette_limit: int, alpha_threshold: int = 16) -> dict[str, Any]:
     img = cv_read_rgba(source)
     height, width = img.shape[:2]
     small = cv2.resize(img, (grid_size, grid_size), interpolation=cv2.INTER_AREA)
-    alpha = small[:, :, 3]
-    rgb = quantize_rgb(small[:, :, :3], palette_limit)
-    small = np.dstack((rgb, np.where(alpha >= alpha_threshold, 255, 0).astype(np.uint8)))
+    small = quantize_visible_rgba(small, palette_limit, alpha_threshold)
     result = cv2.resize(small, (width, height), interpolation=cv2.INTER_NEAREST)
     cv_write_rgba(output, result)
+    return {"method": "opencv-area", "detected_grid": [grid_size, grid_size], "fallback": False}
+
+
+def pixelate_image_perfect_pixel(
+    source: Path,
+    output: Path,
+    grid_size: int,
+    palette_limit: int,
+    sample_method: str,
+    manual_grid: bool,
+    alpha_threshold: int = 16,
+) -> dict[str, Any]:
+    if perfect_pixel_core is None:
+        raise RuntimeError("perfect-pixel is not installed")
+
+    img = cv_read_rgba(source)
+    height, width = img.shape[:2]
+    visible = img[:, :, 3] >= alpha_threshold
+    detect_rgb = img[:, :, :3].copy()
+    detect_rgb[~visible] = 255
+    detect_rgb = np.ascontiguousarray(detect_rgb)
+
+    grid = (grid_size, grid_size) if manual_grid else None
+    if grid is None:
+        grid_w, grid_h = perfect_pixel_core.detect_grid_scale(detect_rgb, peak_width=6, max_ratio=1.5, min_size=4.0)
+        if grid_w is None or grid_h is None:
+            raise RuntimeError("perfect-pixel could not detect a stable grid")
+    else:
+        grid_w, grid_h = grid
+
+    x_coords, y_coords = perfect_pixel_core.refine_grids(detect_rgb, int(round(grid_w)), int(round(grid_h)), 0.25)
+    if len(x_coords) < 2 or len(y_coords) < 2:
+        raise RuntimeError("perfect-pixel produced an empty grid")
+
+    if sample_method == "center":
+        small = perfect_pixel_core.sample_center(img, x_coords, y_coords)
+    elif sample_method == "median":
+        small = perfect_pixel_core.sample_median(img, x_coords, y_coords)
+    else:
+        small = perfect_pixel_core.sample_majority(img, x_coords, y_coords)
+
+    if small.ndim == 2:
+        small = np.dstack((small, small, small, np.full_like(small, 255)))
+    elif small.shape[2] == 3:
+        small = np.dstack((small, np.full(small.shape[:2], 255, dtype=np.uint8)))
+    small = np.clip(np.rint(small), 0, 255).astype(np.uint8)
+    small = quantize_visible_rgba(small, palette_limit, alpha_threshold)
+    result = cv2.resize(small, (width, height), interpolation=cv2.INTER_NEAREST)
+    cv_write_rgba(output, result)
+    return {
+        "method": "perfect-pixel-target" if manual_grid else "perfect-pixel",
+        "detected_grid": [int(small.shape[1]), int(small.shape[0])],
+        "fallback": False,
+        "sample_method": sample_method,
+    }
+
+
+def pixelate_image(
+    source: Path,
+    output: Path,
+    grid_size: int,
+    palette_limit: int,
+    method: str = "perfect-pixel",
+    sample_method: str = "majority",
+    alpha_threshold: int = 16,
+) -> dict[str, Any]:
+    if method == "opencv-area":
+        return pixelate_image_opencv(source, output, grid_size, palette_limit, alpha_threshold)
+    try:
+        return pixelate_image_perfect_pixel(
+            source,
+            output,
+            grid_size,
+            palette_limit,
+            sample_method,
+            manual_grid=method == "perfect-pixel-target",
+            alpha_threshold=alpha_threshold,
+        )
+    except Exception as exc:
+        fallback = pixelate_image_opencv(source, output, grid_size, palette_limit, alpha_threshold)
+        fallback["method"] = method
+        fallback["fallback"] = True
+        fallback["fallback_reason"] = str(exc)
+        return fallback
 
 
 def list_projects() -> list[dict[str, Any]]:
@@ -1222,15 +1332,47 @@ class Handler(BaseHTTPRequestHandler):
             base = character_path(project_id, character_id)
             grid_size = max(8, min(int(body.get("grid_size", 64)), 128))
             palette_limit = max(4, min(int(body.get("palette_limit", 24)), 64))
+            method = body.get("method", "perfect-pixel")
+            if method not in {"perfect-pixel", "perfect-pixel-target", "opencv-area"}:
+                method = "perfect-pixel"
+            sample_method = body.get("sample_method", "majority")
+            if sample_method not in {"majority", "median", "center"}:
+                sample_method = "majority"
             sources = list((base / "views").glob("*.png"))
             sources += list((base / "actions").glob("*/frames/*.png"))
             outputs = []
+            details = []
             for source in sources:
                 rel = source.relative_to(base)
                 output = base / "pixelated" / rel
-                pixelate_image(source, output, grid_size, palette_limit)
-                outputs.append(asset_url(output))
-            self.send_json({"count": len(outputs), "outputs": outputs, "grid_size": grid_size, "palette_limit": palette_limit})
+                result = pixelate_image(source, output, grid_size, palette_limit, method, sample_method)
+                output_url = asset_url(output)
+                outputs.append(output_url)
+                details.append(
+                    {
+                        "source": rel.as_posix(),
+                        "output": output.relative_to(base).as_posix(),
+                        "url": output_url,
+                        **result,
+                    }
+                )
+            metadata = {
+                "count": len(outputs),
+                "outputs": outputs,
+                "details": details,
+                "method": method,
+                "sample_method": sample_method,
+                "grid_size": grid_size,
+                "palette_limit": palette_limit,
+                "generated_at": now_iso(),
+                "fallback_count": sum(1 for item in details if item.get("fallback")),
+            }
+            character_file = base / "character.json"
+            character = read_json(character_file, {})
+            character["pixelated"] = metadata
+            character["updated_at"] = now_iso()
+            write_json(character_file, character)
+            self.send_json(metadata)
             return
 
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
