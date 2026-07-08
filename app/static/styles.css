@@ -56,6 +56,17 @@ button.ghost {
   background: transparent;
 }
 
+button.danger {
+  background: rgba(239, 111, 108, 0.14);
+  border-color: rgba(239, 111, 108, 0.72);
+  color: #ffc2bf;
+}
+
+button.danger:hover {
+  background: rgba(239, 111, 108, 0.22);
+  border-color: var(--danger);
+}
+
 button:disabled {
   cursor: wait;
   opacity: 0.6;
@@ -360,6 +371,12 @@ label {
   gap: 10px;
 }
 
+.button-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .status {
   min-height: 24px;
   color: var(--accent-2);
@@ -414,5 +431,9 @@ label {
   .preview-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .button-row {
+    grid-template-columns: 1fr;
   }
 }

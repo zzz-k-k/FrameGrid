@@ -55,7 +55,7 @@ def unique_id(prefix: str, name: str) -> str:
 def read_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -984,14 +984,21 @@ def quantize_visible_rgba(rgba: np.ndarray, palette_limit: int, alpha_threshold:
     return result
 
 
-def pixelate_image_opencv(source: Path, output: Path, grid_size: int, palette_limit: int, alpha_threshold: int = 16) -> dict[str, Any]:
+def pixelate_image_opencv(
+    source: Path,
+    output: Path,
+    grid_size: int,
+    palette_limit: int,
+    alpha_threshold: int = 16,
+    scale_to_source: bool = True,
+) -> dict[str, Any]:
     img = cv_read_rgba(source)
     height, width = img.shape[:2]
     small = cv2.resize(img, (grid_size, grid_size), interpolation=cv2.INTER_AREA)
     small = quantize_visible_rgba(small, palette_limit, alpha_threshold)
-    result = cv2.resize(small, (width, height), interpolation=cv2.INTER_NEAREST)
+    result = cv2.resize(small, (width, height), interpolation=cv2.INTER_NEAREST) if scale_to_source else small
     cv_write_rgba(output, result)
-    return {"method": "opencv-area", "detected_grid": [grid_size, grid_size], "fallback": False}
+    return {"method": "opencv-area", "detected_grid": [grid_size, grid_size], "output_size": [int(result.shape[1]), int(result.shape[0])], "fallback": False}
 
 
 def pixelate_image_perfect_pixel(
@@ -1002,6 +1009,7 @@ def pixelate_image_perfect_pixel(
     sample_method: str,
     manual_grid: bool,
     alpha_threshold: int = 16,
+    scale_to_source: bool = True,
 ) -> dict[str, Any]:
     if perfect_pixel_core is None:
         raise RuntimeError("perfect-pixel is not installed")
@@ -1038,11 +1046,14 @@ def pixelate_image_perfect_pixel(
         small = np.dstack((small, np.full(small.shape[:2], 255, dtype=np.uint8)))
     small = np.clip(np.rint(small), 0, 255).astype(np.uint8)
     small = quantize_visible_rgba(small, palette_limit, alpha_threshold)
-    result = cv2.resize(small, (width, height), interpolation=cv2.INTER_NEAREST)
+    if manual_grid and not scale_to_source and small.shape[:2] != (grid_size, grid_size):
+        small = cv2.resize(small, (grid_size, grid_size), interpolation=cv2.INTER_NEAREST)
+    result = cv2.resize(small, (width, height), interpolation=cv2.INTER_NEAREST) if scale_to_source else small
     cv_write_rgba(output, result)
     return {
         "method": "perfect-pixel-target" if manual_grid else "perfect-pixel",
         "detected_grid": [int(small.shape[1]), int(small.shape[0])],
+        "output_size": [int(result.shape[1]), int(result.shape[0])],
         "fallback": False,
         "sample_method": sample_method,
     }
@@ -1056,9 +1067,10 @@ def pixelate_image(
     method: str = "perfect-pixel",
     sample_method: str = "majority",
     alpha_threshold: int = 16,
+    scale_to_source: bool = True,
 ) -> dict[str, Any]:
     if method == "opencv-area":
-        return pixelate_image_opencv(source, output, grid_size, palette_limit, alpha_threshold)
+        return pixelate_image_opencv(source, output, grid_size, palette_limit, alpha_threshold, scale_to_source)
     try:
         return pixelate_image_perfect_pixel(
             source,
@@ -1068,13 +1080,222 @@ def pixelate_image(
             sample_method,
             manual_grid=method == "perfect-pixel-target",
             alpha_threshold=alpha_threshold,
+            scale_to_source=scale_to_source,
         )
     except Exception as exc:
-        fallback = pixelate_image_opencv(source, output, grid_size, palette_limit, alpha_threshold)
+        fallback = pixelate_image_opencv(source, output, grid_size, palette_limit, alpha_threshold, scale_to_source)
         fallback["method"] = method
         fallback["fallback"] = True
         fallback["fallback_reason"] = str(exc)
         return fallback
+
+
+def raw_view_urls(character_dir: Path) -> dict[str, str]:
+    return {
+        view: asset_url(character_dir / "views" / f"{view}.png")
+        for view in ("front", "side", "top")
+        if (character_dir / "views" / f"{view}.png").exists()
+    }
+
+
+def view_reference_path(character_dir: Path, view: str) -> Path:
+    editable = character_dir / "editable" / "views" / f"{view}.png"
+    if editable.exists():
+        return editable
+    return character_dir / "views" / f"{view}.png"
+
+
+def editable_view_paths(character_dir: Path) -> dict[str, Path]:
+    return {view: character_dir / "editable" / "views" / f"{view}.png" for view in ("front", "side", "top")}
+
+
+def build_sheet_and_gif(frame_paths: list[Path], sheet_path: Path, gif_path: Path, fps: int) -> dict[str, str]:
+    if not frame_paths:
+        raise ValueError("cannot build animation assets without frames")
+    images = [Image.open(path).convert("RGBA") for path in frame_paths]
+    sheet_path.parent.mkdir(parents=True, exist_ok=True)
+    gif_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet = Image.new("RGBA", (images[0].width * len(images), images[0].height), (0, 0, 0, 0))
+    for idx, image in enumerate(images):
+        sheet.alpha_composite(image, (idx * image.width, 0))
+    sheet.save(sheet_path)
+    images[0].save(gif_path, save_all=True, append_images=images[1:], duration=max(1, int(1000 / fps)), loop=0, disposal=2)
+    return {"spritesheet": asset_url(sheet_path), "preview": asset_url(gif_path)}
+
+
+def create_editable_views(character_dir: Path, pixel_size: int, overwrite: bool = False) -> dict[str, Any]:
+    outputs: dict[str, str] = {}
+    details: list[dict[str, Any]] = []
+    for view, output in editable_view_paths(character_dir).items():
+        source = character_dir / "views" / f"{view}.png"
+        if not source.exists():
+            continue
+        if overwrite or not output.exists():
+            result = pixelate_image(source, output, pixel_size, 24, "perfect-pixel-target", "majority", scale_to_source=False)
+        else:
+            result = {"method": "existing-editable", "detected_grid": [pixel_size, pixel_size], "fallback": False}
+        outputs[view] = asset_url(output)
+        details.append({"kind": "view", "name": view, "source": source.relative_to(character_dir).as_posix(), "output": output.relative_to(character_dir).as_posix(), **result})
+    return {"views": outputs, "details": details}
+
+
+def raw_action_frame_paths(action_dir: Path) -> list[Path]:
+    return sorted((action_dir / "frames").glob("*.png"))
+
+
+def editable_action_frame_paths(character_dir: Path, action_id: str) -> list[Path]:
+    return sorted((character_dir / "editable" / "actions" / action_id / "frames").glob("*.png"))
+
+
+def create_editable_action(character_dir: Path, action_id: str, pixel_size: int, fps: int, overwrite: bool = False) -> dict[str, Any]:
+    raw_action_dir = character_dir / "actions" / action_id
+    editable_action_dir = character_dir / "editable" / "actions" / action_id
+    editable_frames_dir = editable_action_dir / "frames"
+    raw_frames = raw_action_frame_paths(raw_action_dir)
+    frame_urls: list[str] = []
+    frame_paths: list[Path] = []
+    details: list[dict[str, Any]] = []
+    for index, source in enumerate(raw_frames, start=1):
+        output = editable_frames_dir / f"frame_{index:03d}.png"
+        if overwrite or not output.exists():
+            result = pixelate_image(source, output, pixel_size, 24, "perfect-pixel-target", "majority", scale_to_source=False)
+        else:
+            result = {"method": "existing-editable", "detected_grid": [pixel_size, pixel_size], "fallback": False}
+        frame_paths.append(output)
+        frame_urls.append(asset_url(output))
+        details.append({"kind": "action_frame", "index": index, "source": source.relative_to(character_dir).as_posix(), "output": output.relative_to(character_dir).as_posix(), **result})
+    animation_assets = build_sheet_and_gif(frame_paths, editable_action_dir / "spritesheet.png", editable_action_dir / "preview.gif", fps) if frame_paths else {}
+    manifest = {
+        "format": "framegrid-editable-action-v1",
+        "action_id": action_id,
+        "fps": fps,
+        "frame_count": len(frame_urls),
+        "frames": [path.relative_to(character_dir).as_posix() for path in frame_paths],
+        "spritesheet": (editable_action_dir / "spritesheet.png").relative_to(character_dir).as_posix() if frame_paths else None,
+        "preview": (editable_action_dir / "preview.gif").relative_to(character_dir).as_posix() if frame_paths else None,
+        "updated_at": now_iso(),
+    }
+    write_json(editable_action_dir / "manifest.json", manifest)
+    return {"frames": frame_urls, **animation_assets, "manifest": asset_url(editable_action_dir / "manifest.json"), "details": details}
+
+
+def write_editable_manifest(character_dir: Path, character: dict[str, Any]) -> dict[str, Any]:
+    editable_dir = character_dir / "editable"
+    actions: dict[str, Any] = {}
+    for action_manifest in sorted((editable_dir / "actions").glob("*/manifest.json")):
+        action_data = read_json(action_manifest, {})
+        actions[action_manifest.parent.name] = action_data
+    manifest = {
+        "format": "framegrid-editable-v1",
+        "source_of_truth": "PNG files in editable/ plus this manifest.json",
+        "character_id": character.get("id"),
+        "character_name": character.get("name"),
+        "pixel_size": character.get("pixel_size", 64),
+        "views": {view: path.relative_to(character_dir).as_posix() for view, path in editable_view_paths(character_dir).items() if path.exists()},
+        "actions": actions,
+        "updated_at": now_iso(),
+    }
+    write_json(editable_dir / "manifest.json", manifest)
+    return {"manifest": asset_url(editable_dir / "manifest.json"), **manifest}
+
+
+def sync_editable_character(project_id: str, character_id: str, overwrite: bool = False) -> dict[str, Any]:
+    character_dir = character_path(project_id, character_id)
+    character_file = character_dir / "character.json"
+    character = read_json(character_file, {})
+    pixel_size = normalize_pixel_size(character.get("pixel_size", 64))
+    raw_views = character.get("raw_views") or raw_view_urls(character_dir)
+    editable_views = create_editable_views(character_dir, pixel_size, overwrite)
+    character["raw_views"] = raw_views
+    if editable_views["views"]:
+        character["views"] = editable_views["views"]
+
+    action_results: list[dict[str, Any]] = []
+    for action_file in sorted((character_dir / "actions").glob("*/action.json")):
+        action = read_json(action_file, {})
+        action_id = action.get("id") or action_file.parent.name
+        raw_assets = action.get("raw_assets") or {
+            "frames": [asset_url(path) for path in raw_action_frame_paths(action_file.parent)],
+            "spritesheet": asset_url(action_file.parent / "spritesheet.png") if (action_file.parent / "spritesheet.png").exists() else None,
+            "preview": asset_url(action_file.parent / "preview.gif") if (action_file.parent / "preview.gif").exists() else None,
+        }
+        editable_assets = create_editable_action(character_dir, action_id, pixel_size, int(action.get("fps", 8)), overwrite)
+        action["raw_assets"] = raw_assets
+        action["frames"] = editable_assets.get("frames", action.get("frames", []))
+        if editable_assets.get("spritesheet"):
+            action["spritesheet"] = editable_assets["spritesheet"]
+        if editable_assets.get("preview"):
+            action["preview"] = editable_assets["preview"]
+        action["editable"] = {
+            "truth_source": "editable PNG frame sequence",
+            "path": str(character_dir / "editable" / "actions" / action_id),
+            "manifest": editable_assets.get("manifest"),
+            "updated_at": now_iso(),
+        }
+        action["updated_at"] = now_iso()
+        write_json(action_file, action)
+        action_results.append({"action_id": action_id, "frame_count": len(editable_assets.get("frames", [])), "manifest": editable_assets.get("manifest")})
+
+    manifest = write_editable_manifest(character_dir, character)
+    character["editable"] = {
+        "truth_source": "editable PNG files + manifest.json",
+        "path": str(character_dir / "editable"),
+        "manifest": manifest["manifest"],
+        "views": editable_views["views"],
+        "actions": action_results,
+        "updated_at": now_iso(),
+    }
+    character["updated_at"] = now_iso()
+    write_json(character_file, character)
+    return {"character": character, "manifest": manifest, "views": editable_views, "actions": action_results}
+
+
+def open_path_in_file_manager(path: Path) -> None:
+    target = path.resolve()
+    if not target.is_relative_to(DATA_ROOT.resolve()):
+        raise ValueError("invalid editable path")
+    target.mkdir(parents=True, exist_ok=True)
+    if sys.platform.startswith("win"):
+        os.startfile(str(target))  # type: ignore[attr-defined]
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(target)])
+    else:
+        subprocess.Popen(["xdg-open", str(target)])
+
+
+def remove_tree_checked(target: Path, root: Path, marker: str | None = None) -> None:
+    resolved_target = target.resolve()
+    resolved_root = root.resolve()
+    if resolved_target == resolved_root or not resolved_target.is_relative_to(resolved_root):
+        raise ValueError("refusing to delete outside the generated assets root")
+    if not resolved_target.exists():
+        raise FileNotFoundError(f"not found: {target}")
+    if marker and not (resolved_target / marker).exists():
+        raise ValueError(f"refusing to delete folder without {marker}")
+    shutil.rmtree(resolved_target)
+
+
+def delete_project(project_id: str) -> dict[str, Any]:
+    target = project_path(project_id)
+    remove_tree_checked(target, DATA_ROOT, "project.json")
+    return {"deleted": "project", "id": project_id}
+
+
+def delete_character(project_id: str, character_id: str) -> dict[str, Any]:
+    target = character_path(project_id, character_id)
+    remove_tree_checked(target, project_path(project_id) / "characters", "character.json")
+    return {"deleted": "character", "id": character_id, "project_id": project_id}
+
+
+def delete_action(project_id: str, character_id: str, action_id: str) -> dict[str, Any]:
+    character_dir = character_path(project_id, character_id)
+    target = action_path(project_id, character_id, action_id)
+    remove_tree_checked(target, character_dir / "actions", "action.json")
+    editable_action_dir = character_dir / "editable" / "actions" / action_id
+    if editable_action_dir.exists():
+        remove_tree_checked(editable_action_dir, character_dir / "editable" / "actions")
+    sync_editable_character(project_id, character_id, overwrite=False)
+    return {"deleted": "action", "id": action_id, "character_id": character_id, "project_id": project_id}
 
 
 def list_projects() -> list[dict[str, Any]]:
@@ -1116,6 +1337,9 @@ class Handler(BaseHTTPRequestHandler):
         self.route()
 
     def do_POST(self) -> None:
+        self.route()
+
+    def do_DELETE(self) -> None:
         self.route()
 
     def route(self) -> None:
@@ -1166,6 +1390,8 @@ class Handler(BaseHTTPRequestHandler):
             content_type = "text/css; charset=utf-8"
         elif target.suffix == ".js":
             content_type = "text/javascript; charset=utf-8"
+        elif target.suffix == ".json":
+            content_type = "application/json; charset=utf-8"
         elif target.suffix == ".png":
             content_type = "image/png"
         elif target.suffix == ".gif":
@@ -1206,6 +1432,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.command == "GET" and len(parts) == 3 and parts[:2] == ["api", "projects"]:
             self.send_json(project_detail(parts[2]))
+            return
+
+        if self.command == "DELETE" and len(parts) == 3 and parts[:2] == ["api", "projects"]:
+            self.send_json(delete_project(parts[2]))
             return
 
         if self.command == "GET" and len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "action-templates":
@@ -1251,7 +1481,7 @@ class Handler(BaseHTTPRequestHandler):
             character_id = unique_id("character", name)
             base = character_path(project_id, character_id)
             (base / "actions").mkdir(parents=True, exist_ok=True)
-            views = save_views(base, prompt, pixel_size)
+            raw_views = save_views(base, prompt, pixel_size)
             data = {
                 "id": character_id,
                 "project_id": project_id,
@@ -1262,17 +1492,37 @@ class Handler(BaseHTTPRequestHandler):
                 "skeleton_id": skeleton["id"],
                 "skeleton_config": skeleton,
                 "provider": provider_name(),
-                "views": views,
+                "raw_views": raw_views,
+                "views": raw_views,
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
                 "path": str(base),
             }
             write_json(base / "character.json", data)
-            self.send_json(data, HTTPStatus.CREATED)
+            synced = sync_editable_character(project_id, character_id, overwrite=True)
+            self.send_json(synced["character"], HTTPStatus.CREATED)
             return
 
         if self.command == "GET" and len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "characters":
             self.send_json(character_detail(parts[2], parts[4]))
+            return
+
+        if self.command == "DELETE" and len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "characters":
+            self.send_json(delete_character(parts[2], parts[4]))
+            return
+
+        if self.command == "POST" and len(parts) == 7 and parts[:2] == ["api", "projects"] and parts[3] == "characters" and parts[5] == "editable" and parts[6] == "sync":
+            body = self.read_body()
+            overwrite = bool(body.get("overwrite", False))
+            synced = sync_editable_character(parts[2], parts[4], overwrite=overwrite)
+            self.send_json({"character": synced["character"], "manifest": synced["manifest"], "views": synced["views"], "actions": synced["actions"]})
+            return
+
+        if self.command == "POST" and len(parts) == 7 and parts[:2] == ["api", "projects"] and parts[3] == "characters" and parts[5] == "editable" and parts[6] == "open":
+            sync_editable_character(parts[2], parts[4], overwrite=False)
+            editable_dir = character_path(parts[2], parts[4]) / "editable"
+            open_path_in_file_manager(editable_dir)
+            self.send_json({"path": str(editable_dir)})
             return
 
         if self.command == "POST" and len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "characters" and parts[5] == "actions":
@@ -1293,12 +1543,13 @@ class Handler(BaseHTTPRequestHandler):
             render_pose_guides(action_template, skeleton, guide_dir)
             pose_guides = [guide_dir / f"frame_{int(frame['index']):03d}_pose.png" for frame in action_template.get("frames", [])]
             write_json(base / "action_template.json", action_template)
+            character_dir = character_path(project_id, character_id)
             reference_paths = [
-                character_path(project_id, character_id) / "views" / "front.png",
-                character_path(project_id, character_id) / "views" / "side.png",
-                character_path(project_id, character_id) / "views" / "top.png",
+                view_reference_path(character_dir, "front"),
+                view_reference_path(character_dir, "side"),
+                view_reference_path(character_dir, "top"),
             ]
-            assets = save_action_frames(base, character.get("prompt", ""), prompt, name, frame_count, fps, reference_paths, pixel_size, action_template, pose_guides)
+            raw_assets = save_action_frames(base, character.get("prompt", ""), prompt, name, frame_count, fps, reference_paths, pixel_size, action_template, pose_guides)
             data = {
                 "id": action_id,
                 "character_id": character_id,
@@ -1312,18 +1563,24 @@ class Handler(BaseHTTPRequestHandler):
                 "pose_guides": [asset_url(path) for path in pose_guides],
                 "provider": provider_name(),
                 "reference_views": character.get("views", {}),
-                **assets,
+                "raw_assets": raw_assets,
+                **raw_assets,
                 "created_at": now_iso(),
                 "updated_at": now_iso(),
                 "path": str(base),
             }
             write_json(base / "action.json", data)
-            self.send_json(data, HTTPStatus.CREATED)
+            sync_editable_character(project_id, character_id, overwrite=False)
+            self.send_json(read_json(base / "action.json", {}), HTTPStatus.CREATED)
             return
 
         if self.command == "GET" and len(parts) == 7 and parts[:2] == ["api", "projects"] and parts[3] == "characters" and parts[5] == "actions":
             data = read_json(action_path(parts[2], parts[4], parts[6]) / "action.json", {})
             self.send_json(data)
+            return
+
+        if self.command == "DELETE" and len(parts) == 7 and parts[:2] == ["api", "projects"] and parts[3] == "characters" and parts[5] == "actions":
+            self.send_json(delete_action(parts[2], parts[4], parts[6]))
             return
 
         if self.command == "POST" and len(parts) == 6 and parts[:2] == ["api", "projects"] and parts[3] == "characters" and parts[5] == "pixelate":

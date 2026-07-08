@@ -229,3 +229,33 @@ OpenCV 下采样 + 调色板量化 + 最近邻放大
 ```
 
 当前角色页的 `完美像素化` 按钮默认使用 `perfectPixel 自动网格`。如果自动检测失败，系统会回退到原来的 OpenCV 目标尺寸规整，避免生成流程中断。也可以手动选择 `perfectPixel 指定尺寸` 或 `OpenCV 目标尺寸`。
+
+## 4. 通用可编辑真相源
+
+后续项目不把某一个绘图软件的工程格式作为真相源，而是使用通用 PNG 文件夹：
+
+```text
+characters/<character_id>/
+  views/                 # AI/raw 原始三视图
+  actions/               # AI/raw 原始动作帧
+  editable/              # 当前可编辑真相源
+    manifest.json
+    views/
+      front.png
+      side.png
+      top.png
+    actions/
+      <action_id>/
+        manifest.json
+        frames/
+          frame_001.png
+          frame_002.png
+        spritesheet.png
+        preview.gif
+```
+
+生成角色或动作时，系统会先保存 raw 原图，再自动用 perfectPixel 生成低分辨率 editable PNG。页面默认展示 editable 版本，后续动作生成也优先使用 editable 三视图作为角色参考。
+
+用户可以用 Pixelorama、Aseprite、Krita、Photoshop、GIMP、Piskel 等任意能编辑 PNG 的软件打开 `editable/` 文件夹。编辑并保存 PNG 后，回到 FrameGrid 点击 `同步编辑结果`，系统会重新读取 editable PNG，并刷新角色预览、动作 GIF 和 spritesheet。
+
+`从 raw 重建 editable` 会重新运行 perfectPixel 并覆盖 editable PNG，只适合用户想放弃手动编辑时使用。

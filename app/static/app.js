@@ -268,7 +268,10 @@ function projectCard(project) {
         <span class="badge">${project.character_count || 0} 角色</span>
       </div>
       <div class="meta">${project.id}<br />${project.created_at}</div>
-      <button class="primary" data-open-project="${project.id}">进入项目</button>
+      <div class="button-row">
+        <button class="primary" data-open-project="${project.id}">进入项目</button>
+        <button class="danger" data-delete-project="${project.id}" data-delete-name="${project.name}">删除</button>
+      </div>
     </article>
   `;
 }
@@ -285,7 +288,10 @@ function characterCard(character) {
         ${imageTile(character.views?.side, "侧")}
       </div>
       <div class="meta">${character.skeleton_config?.name || character.skeleton_id || "humanoid_basic"}<br />${character.prompt || "无提示词"}</div>
-      <button class="primary" data-open-character="${character.id}">进入角色</button>
+      <div class="button-row">
+        <button class="primary" data-open-character="${character.id}">进入角色</button>
+        <button class="danger" data-delete-character="${character.id}" data-delete-name="${character.name}">删除</button>
+      </div>
     </article>
   `;
 }
@@ -302,7 +308,10 @@ function actionCard(action) {
         <img class="action-preview" src="${action.preview}" alt="${action.name}" />
       </div>
       <div class="meta">${template.name || action.template_id || "动作模板"} · ${template.direction || "front"}<br />${action.fps} FPS</div>
-      <button class="primary" data-open-action="${action.id}">查看动作</button>
+      <div class="button-row">
+        <button class="primary" data-open-action="${action.id}">查看动作</button>
+        <button class="danger" data-delete-action="${action.id}" data-delete-name="${action.name}">删除</button>
+      </div>
     </article>
   `;
 }
@@ -362,6 +371,28 @@ function pixelatedOutputPanel(character) {
   `;
 }
 
+function editableSourcePanel(character) {
+  const editable = character.editable || {};
+  const viewCount = Object.keys(editable.views || character.views || {}).length;
+  const actionCount = editable.actions?.length || 0;
+  return `
+    <section class="panel">
+      <h3>编辑源文件</h3>
+      <div class="meta">
+        真相源：editable PNG + manifest.json<br />
+        视图：${viewCount} 张 · 动作：${actionCount} 套<br />
+        ${editable.path || `${character.path}\\editable`}
+      </div>
+      <div class="button-row">
+        <button type="button" data-open-editable>打开文件夹</button>
+        <button type="button" data-sync-editable>同步编辑结果</button>
+      </div>
+      <button type="button" class="ghost" data-rebuild-editable>从 raw 重建 editable</button>
+      <div class="status">${editable.updated_at ? `上次同步：${editable.updated_at}` : "生成角色后会自动创建 editable 源文件。"}</div>
+    </section>
+  `;
+}
+
 function renderHome() {
   layout(
     `
@@ -405,6 +436,7 @@ function renderProject() {
         <h2>当前项目</h2>
         <div class="crumb">${project.path}</div>
       </section>
+      <button class="danger" data-delete-project="${project.id}" data-delete-name="${project.name}">删除当前项目</button>
       <section class="panel">
         <h3>创建角色</h3>
         <form class="form" id="characterForm">
@@ -449,6 +481,7 @@ function renderCharacter() {
   layout(
     `
       <button class="ghost" data-back-project>返回项目</button>
+      <button class="danger" data-delete-character="${character.id}" data-delete-name="${character.name}">删除当前角色</button>
       <section class="side-section">
         <h2>角色目录</h2>
         <div class="crumb">${character.path}</div>
@@ -502,6 +535,7 @@ function renderCharacter() {
           <div class="status">${state.busy ? "正在生成动作模板草稿..." : "会根据当前骨骼生成多帧 pose 和骨骼参考图。"}</div>
         </form>
       </section>
+      ${editableSourcePanel(character)}
       <section class="panel">
         <h3>完美像素化</h3>
         <form class="form" id="pixelateForm">
@@ -570,6 +604,7 @@ function renderAction() {
   layout(
     `
       <button class="ghost" data-back-character>返回角色</button>
+      <button class="danger" data-delete-action="${action.id}" data-delete-name="${action.name}">删除当前动作</button>
       <section class="side-section">
         <h2>动作信息</h2>
         <div class="crumb">${action.path}</div>
@@ -665,6 +700,32 @@ async function openAction(id) {
   render();
 }
 
+async function deleteProject(id, name) {
+  if (!confirm(`确定删除项目「${name || id}」吗？项目里的角色、动作和 editable 文件都会被删除。`)) return;
+  await api(`/api/projects/${id}`, { method: "DELETE" });
+  state.project = null;
+  state.character = null;
+  state.action = null;
+  await loadProjects();
+}
+
+async function deleteCharacter(id, name) {
+  if (!state.project) return;
+  if (!confirm(`确定删除角色「${name || id}」吗？这个角色的三视图、动作和 editable 文件都会被删除。`)) return;
+  await api(`/api/projects/${state.project.id}/characters/${id}`, { method: "DELETE" });
+  state.character = null;
+  state.action = null;
+  await openProject(state.project.id);
+}
+
+async function deleteAction(id, name) {
+  if (!state.project || !state.character) return;
+  if (!confirm(`确定删除动作「${name || id}」吗？这个动作的帧、GIF、spritesheet 和 editable 动作帧都会被删除。`)) return;
+  await api(`/api/projects/${state.project.id}/characters/${state.character.id}/actions/${id}`, { method: "DELETE" });
+  state.action = null;
+  await openCharacter(state.character.id);
+}
+
 document.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -752,6 +813,41 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.backCharacter !== undefined) {
     await openCharacter(state.character.id);
+  }
+  if (target.dataset.deleteProject) {
+    await deleteProject(target.dataset.deleteProject, target.dataset.deleteName);
+    return;
+  }
+  if (target.dataset.deleteCharacter) {
+    await deleteCharacter(target.dataset.deleteCharacter, target.dataset.deleteName);
+    return;
+  }
+  if (target.dataset.deleteAction) {
+    await deleteAction(target.dataset.deleteAction, target.dataset.deleteName);
+    return;
+  }
+  if (target.dataset.openEditable !== undefined) {
+    const result = await api(`/api/projects/${state.project.id}/characters/${state.character.id}/editable/open`, { method: "POST" });
+    alert(`已打开编辑源文件夹：${result.path}`);
+  }
+  if (target.dataset.syncEditable !== undefined) {
+    const result = await api(`/api/projects/${state.project.id}/characters/${state.character.id}/editable/sync`, {
+      method: "POST",
+      body: { overwrite: false },
+    });
+    state.character = result.character;
+    render();
+    alert("已同步 editable 编辑结果");
+  }
+  if (target.dataset.rebuildEditable !== undefined) {
+    if (!confirm("这会用 raw 原始图重新生成 editable，并覆盖你手动编辑过的 PNG。确定继续吗？")) return;
+    const result = await api(`/api/projects/${state.project.id}/characters/${state.character.id}/editable/sync`, {
+      method: "POST",
+      body: { overwrite: true },
+    });
+    state.character = result.character;
+    render();
+    alert("已从 raw 重建 editable");
   }
   if (target.dataset.openProject) await openProject(target.dataset.openProject);
   if (target.dataset.openCharacter) await openCharacter(target.dataset.openCharacter);
